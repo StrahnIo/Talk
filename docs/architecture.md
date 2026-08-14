@@ -16,6 +16,13 @@
 - **No acknowledgement** is sent back to the sender about successful receipt.
   Rejects go to the outbox.
 
+### Security model
+
+The mailbox is **server-blind end-to-end** (Model A): the server stores
+ciphertext only and never holds keys that can decrypt user data at rest.
+Invoices are sealed to the recipient's key material; the server decrypts only
+during an explicit app-password request. See [`security.md`](security.md).
+
 ## Why verification is sound
 
 The delivered note data is the same note data a wallet would obtain by scanning
@@ -47,6 +54,28 @@ delays it.
 
 - The daemon holds **viewing keys only**. It cannot spend on its own.
 - The spending key stays with the user/caller.
+
+## Modular design
+
+Every pluggable decision is behind a Rust trait so mechanisms can be swapped
+without touching the protocol core. Threshold custody, engines, and storage are
+drop-in implementations.
+
+| Concern | Trait | v1 impls | Swappable to |
+|---|---|---|---|
+| Mailbox storage | `MailStore` | `SqliteStore` (SQLCipher optional) | anything |
+| Key unwrap / decryption | `KeyResolver` | `MasterKeyResolver`, `ShareResolver` | `ThresholdResolver` (2-of-3, later) |
+| Share scheme | `ShareScheme` | `PerShareWrapper` (DK wrapped per share) | real threshold SSS |
+| Message templating | `TemplateEngine` | `TeraEngine`, `LiquidEngine` | (deferred) |
+| Attestation | `Attester` | `DomainKeyAttester` | keyserver / on-ledger |
+
+Key contracts:
+
+- `KeyResolver::unwrap(data_key, credential) -> Option<Dk>` — the app-password
+  path returns DK in memory; callers must zeroize.
+- `ShareScheme::wrap(dk, shares) -> WrappedDkSet` and
+  `rewrap(survivors, dk) -> WrappedDkSet` — revocation = re-wrap under
+  survivors; DK never changes.
 
 ## Send path (decided architecture)
 
@@ -87,8 +116,36 @@ Three sockets:
 - **secure_mailbox.sock** — local only; uses user authentication. The user/wallet
   interface (signing happens here; this socket's caller is a human or their
   software).
-- **mailbox.sock** — disabled by default; used to expose via HTTP. Design
-  deferred. Must be HTTP/2 compliant so consumers can interact with it like any
-  HTTP port, and it can be exposed as an HTTP server via a reverse proxy.
+- **mailbox.sock** — the IMAP listener (hand-rolled IMAP4rev1 subset; IDLE push;
+  IMAPS-first). Disabled by default. See [`imap.md`](imap.md). HTTP/2 on the
+  mailbox was not hardline and is not a day-one requirement.
 - **zsmtp.sock** — outbound delivery: prepares a transaction, prompts the caller
   to sign, then sends to another server's account. See [`zsmtp.md`](zsmtp.md).
+
+## Delivery → mailbox pipeline
+
+```
+ZSMTP delivery (invoice: sealed | plaintext, both encrypted)
+        │
+        ▼
+┌───────────────────────────────┐
+│  Translation harness          │   (deferred: "when to template what")
+│  TemplateEngine (trait)       │
+│  config: engine + selection   │
+└───────────────────────────────┘
+        │  rendered MIME bytes (opaque here)
+        ▼
+┌───────────────────────────────┐
+│  MailStore (SQLite + SQLCipher│
+│  behind trait)                │
+└───────────────────────────────┘
+        │  store → broadcast
+        ▼
+┌───────────────────────────────┐
+│  IMAP stack (hand-rolled)     │
+│  IDLE push on new message     │
+└───────────────────────────────┘
+```
+
+IMAP has zero rendering logic and the push layer has zero rendering logic; the
+harness owns all presentation, and it is config-driven.
