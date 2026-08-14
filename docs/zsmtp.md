@@ -1,55 +1,36 @@
 # ZSMTP Protocol
 
-The protocol spoken over `zsmtp.sock` between daemons. This is the design in
-progress.
+**Zcash Simple Money Transfer Protocol.** A federated, SMTP-like protocol for
+privately sending Zcash between users, run between daemons over `zsmtp.sock`.
+This is the design in progress.
 
-## SMTP reference
+## Why federated (not ENS-like)
 
-Session mechanics to mirror:
+ENS-style central registries work for transparent systems, where an address is
+a stable identity and unlinkability is not a concern. They are fundamentally
+unsuited to shielded addresses, where:
 
-- Line-based request/reply session with 3-digit status codes:
-  `2xx` success, `3xx` continue, `4xx` transient fail (retry later),
-  `5xx` permanent fail (give up).
-- Envelope: `MAIL FROM` / `RCPT TO`, distinct from the message body. Multiple
-  `RCPT TO` = fan-out.
-- `DATA` carries headers + body; dot-stuffing terminates the payload.
-- `Message-ID`: globally-unique id from the sender, used for dedup across relays.
-- `Received:` chain: each relay appends a header, creating an audit trail.
-- DKIM/SPF: sending domain signs the message; the receiving MX validates via DNS.
-- Routing via MX record lookup in DNS — the record tells you where to deliver.
-- "250 OK queued" means "accepted by next hop", not "received by user".
-- Queuing and retry with backoff on `4xx`; `5xx` is permanent. Bounces are
-  separate messages, not in-band acks.
-- Auth: classic server-to-server SMTP is unauthenticated (why SPF/DKIM/DMARC were
-  bolted on later). User submission uses SMTP AUTH + TLS on port 587.
+- **Address rotation is practically a given** — fresh addresses per payment to
+  preserve unlinkability.
+- **Anonymity/unlinkability matter most** — a registry binds an identity to an
+  address, which is the opposite of the point.
 
-### SMTP → ZSMTP mapping
+A federated model, like email, keeps discovery distributed. Contacting a light
+indexer reveals your IP and *that you requested a specific identity* — with no
+PIR, the indexer can log every request. We do not claim to solve that entirely;
+the design intent is to shrink the attack surface from "a general indexer which
+logs every request" to **only the intended server** (the one the sender already
+knows about via DNS).
 
-| SMTP concept | ZSMTP translation |
-|---|---|
-| `MAIL FROM` / `RCPT TO` envelope | Sender account → recipient account envelope |
-| MX + DNS routing | DNS record → where to find recipient's daemon |
-| `Message-ID` dedup | Mandatory unique message id |
-| `250 OK queued` | "Accepted into inbox" — not "received by user" |
-| No end-to-end ack | Same — already decided |
-| 4xx vs 5xx | Transient (resend later) vs permanent (outbox quarantine) |
-| DATA + headers/body | Note data payload |
-| SPF/DKIM validation | DNS-key validation of the sending server |
-| Session commands | State machine — greet, identify, deliver |
+## Protocol overview
 
-Things SMTP got wrong that we should not copy:
-
-- No auth between servers → sending server should be cryptographically identified
-  from the start (this is the DNS key validation).
-- Bounce messages → rejects go to the outbox; no bounce generated.
-- Email trusts the relay → here the recipient daemon verifies against the
-  chain/indexer, so forgery is impossible anyway.
-
-## Handshake flow
+Servers expose a service on a standard port or via an SRV record. The exchange
+is a CEI (Commit-Effect-Interact)-style protocol for revealing addresses.
 
 ### 1. Server authentication (domain keys)
 
-Servers prove identity via a **domain key**.
+Both servers authenticate as true to their DNS via **domain keys** (DKIM-
+style).
 
 1. The sending server sends a random scalar challenge, signed with its own
    domain key.
@@ -61,48 +42,77 @@ Open (see [`decisions.md`](decisions.md)): exact signed-challenge format,
 whether the challenge binds both parties' IDs, session nonce, timestamp, and
 whether authentication is mutual.
 
-### 2. Session key establishment
+### 2. Deniable session (ECDH)
 
 There is **no user authentication** at the ZSMTP layer — users authenticate
 locally against `secure_mailbox.sock`, not over the wire.
 
 After server auth, an **ECDH (commit-and-reveal)** exchange establishes an
 ephemeral session key. Both sides commit to ephemeral public keys, then reveal,
-then derive the session key and begin an encrypted conversation.
+then derive the session key and begin an encrypted conversation. The ECDH gives
+a **deniable session**: the transcript is not non-repudiable in itself.
 
 Open: whether the ECDH is bound to the domain-key auth, and whether commit-and-
 reveal alone is sufficient against MITM / signature-relay attacks.
 
-### 3. Address request
+### 3. Address attestation request
 
-The sender requests a shielded ZEC address from the server. The returned address
-is **optionally signed** using a recognised signature instrument (a user public
-key on a keyserver, e.g. keybase.io) — see "Invoice" below for what is signed.
+The sender requests an attestation of an address for a queried user. The server
+can generate the address **on demand** using keypairs it controls, protecting
+privacy (fresh, unlinkable addresses). For **public identities** (ENS-like), the
+attestation can optionally be against a **static public key** or against an
+**entry in the Zcash ledger** (on-chain anchoring), so a sender can verify the
+address belongs to the entity they intend to pay.
 
-### 4. Invoice
+Two issuance modes, requested explicitly:
+
+- `ephemeral` — a fresh, one-shot address generated on demand. No signature.
+- `attested` — a stable address signed by the server / a recognised identity
+  instrument (e.g. a user public key on a keyserver).
+
+### 4. Sealed invoice
 
 - The **invoice is generated by the sender** and may contain details of the
   transaction.
-- The **keybase signature signs the shielded ZEC address**, not the invoice.
-  It is an ownership attestation: "this address belongs to this identity". It
-  does not cover invoice contents.
-- The invoice is encrypted using a key `K`. The key `K` is sent as a **memo**
-  with the actual on-chain transaction.
+- The **attestation signature signs the shielded ZEC address**, not the
+  invoice. It is an ownership attestation: "this address belongs to this
+  identity". It does not cover invoice contents.
+- The invoice is **sealed** — encrypted using a key `K`. The key `K` is sent as
+  a **memo** with the actual on-chain transaction.
 
 ### 5. Acknowledgment and address confirmation
 
-The server acknowledges receipt of the invoice by signing with its domain key,
-and supplies the address to send to.
+The server acknowledges receipt of the (sealed) invoice by signing with its
+domain key, and supplies the address to send to.
 
 ### 6. Payment
 
-The sender sends the ZEC. The recipient then notifies the recipient; **this
-notification is entirely optional**.
+The sender sends the ZEC, with `K` attached as the memo. The sender then
+notifies the recipient; **this notification is entirely optional**.
+
+## IVK delegation (crucial clarification)
+
+Like a real email server, the receiving server does **not necessarily hold the
+IVK** — just as the sending server does not necessarily need the spending keys
+to broadcast transactions. IVK handling is delegated in one of two ways:
+
+- **Server holds the IVK.** It decrypts the memo as normal — no hassle for the
+  server. This is the custodial-receive path, appropriate for exchanges.
+- **Server does not hold the IVK (dumb mailbox).** The IVK owner fetches the
+  encrypted memo from the server mailbox via an **IMAP-like approach** and
+  decrypts it locally against their own transaction history.
+
+The critical property of the second mode: because the memo is encrypted with
+`K`, which can only be retrieved by the IVK owner, the server **does not learn
+the invoice contents even though it stores the blob**. This works without the
+user being online to receive the invoice, and still yields a proof-of-integrity
+record (see caveats below — the sender's delivery is non-repudiable; the
+recipient's awareness is not proven by the server's signature alone).
 
 ## The memo key `K` (deniability + self-consistent record)
 
 `K` is the keystone of the design. Everything in the ZSMTP transcript — the
-address request, the encrypted invoice, the ack — is opaque without it, and `K`
+address request, the sealed invoice, the ack — is opaque without it, and `K`
 only exists inside the on-chain memo, which only decrypts under the receiver's
 IVK.
 
@@ -135,23 +145,64 @@ Three axes:
 
 - **Who is paying** → hidden (shielded by default).
 - **What is being paid** → hidden (shielded by default).
-- **Who is being paid** → hidden *unless the recipient opts in* via the
-  keybase-signed address (exchanges, public identities).
+- **Who is being paid** → hidden *unless the recipient opts in* via an attested
+  address (exchanges, public identities).
 
-The keybase signature is an **opt-in deanonymization**, not a protocol
-requirement. Private recipients skip it; exchanges use it because their deposit
-address is public anyway.
+The attestation is an **opt-in deanonymization**, not a protocol requirement.
+Private recipients use `ephemeral` addresses; exchanges use `attested` addresses
+because their deposit address is public anyway.
 
-### Address issuance policy
+## Claims and caveats (tightened)
 
-- **Private recipient** → server issues a **fresh, one-shot address per
-  transaction** (ephemeral, unlinkable across payments) → no signature.
-- **Identifiable recipient** (e.g. an exchange like Gemini) → **stable deposit
-  address** + signed address, so the sender can verify the address really belongs
-  to the entity they think they're paying.
+- **Proof-of-integrity is delivery, not receipt.** The server signing a *sealed*
+  blob proves "an invoice blob was delivered via this server," not that the
+  recipient read its contents. A recipient can still claim the blob was opaque
+  to them. Proving recipient *knowledge* would require the recipient to sign an
+  acceptance — which reintroduces interactivity and breaks the offline property.
+  **Offline recipient XOR non-repudiable receipt.** The honest claim: the
+  sender's delivery is non-repudiable; the recipient's awareness is not proven.
+- **Deniable session is a content claim, not a connection claim.** The ECDH
+  makes the *transcript* deniable; the *fact of connection* (IP, timing, server
+  logs) is still observable by the server. This is accepted scope reduction, not
+  connection anonymity.
+- **Server-held IVK is a privacy loss.** A server holding the IVK reads every
+  memo. Default should be user-held IVK; server-held IVK is an explicit opt-in.
+- **PIR is future work.** Because the sender already knows which server it is
+  querying (via DNS), PIR does not apply to address lookup itself; it is an
+  enhancement for other queries, not a stated goal of the core protocol.
 
-The "request shielded address" step should therefore take an explicit flag:
-`ephemeral` vs `attested`.
+## SMTP reference
+
+Session mechanics to mirror:
+
+- Line-based request/reply session with 3-digit status codes:
+  `2xx` success, `3xx` continue, `4xx` transient fail (retry later),
+  `5xx` permanent fail (give up).
+- `Message-ID`: globally-unique id from the sender, used for dedup across relays.
+- `Received:` chain: each relay appends a header, creating an audit trail.
+- DKIM/SPF: sending domain signs the message; the receiving MX validates via DNS.
+- Routing via DNS records — the record tells you where to deliver.
+- "accepted by next hop" acknowledgments only, not "received by user".
+- Queuing and retry with backoff on `4xx`; `5xx` is permanent.
+
+### SMTP → ZSMTP mapping
+
+| SMTP concept | ZSMTP translation |
+|---|---|
+| MX + DNS routing | DNS record / SRV → where to find recipient's daemon |
+| `Message-ID` dedup | Mandatory unique message id |
+| "accepted by next hop" | "Accepted into inbox" — not "received by user" |
+| No end-to-end ack | Same — already decided |
+| 4xx vs 5xx | Transient (resend later) vs permanent (outbox quarantine) |
+| DKIM/SPF validation | DNS domain-key validation of the sending server |
+| Session commands | State machine — greet, identify, deliver |
+
+Things SMTP got wrong that we should not copy:
+
+- No auth between servers → sending server should be cryptographically identified
+  from the start (domain keys).
+- Email trusts the relay → here the recipient daemon verifies against the
+  chain/indexer, so forgery is impossible anyway.
 
 ## Open protocol questions
 
@@ -159,6 +210,6 @@ The "request shielded address" step should therefore take an explicit flag:
   provable, or must it be hardened too?).
 - Ordering: is the address supplied up front, or only at the end ("here's the
   address to send to, I've received your invoice")?
-- Exact format of the sender-generated invoice, plaintext vs encrypted fields.
-- Which signature instrument to standardize on (keybase.io was shut down in 2023;
-  a live alternative must be chosen).
+- Exact format of the sender-generated invoice, plaintext vs sealed fields.
+- Which signature instrument / keyserver to standardize on (keybase.io was shut
+  down in 2023; a live alternative or on-ledger anchoring must be chosen).
