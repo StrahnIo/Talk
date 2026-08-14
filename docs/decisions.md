@@ -35,6 +35,31 @@ self-consistent record (on-chain tx ↔ invoice).
 `ephemeral` (fresh one-shot address, private recipients) vs `attested` (stable
 deposit address + signature, exchanges).
 
+### D9 — Federated identity, not ENS-like
+Central registries bind an identity to an address, which is incompatible with
+shielded address rotation and unlinkability. Discovery is federated (email-
+like), reducing the attack surface from "a general indexer which logs every
+request" to only the intended server.
+
+### D10 — IVK delegation is a server option
+The receiving server does not necessarily hold the IVK, just as the sending
+server does not necessarily hold the spending keys. Either the server holds the
+IVK (decrypts memos directly; custodial-receive, e.g. exchanges) or it is a
+dumb mailbox and the IVK owner fetches sealed invoices via an IMAP-like
+interface and decrypts locally. Default is user-held IVK; server-held IVK is an
+explicit opt-in.
+
+### D11 — Deniable session, content not connection
+ECDH provides a deniable *transcript*; the fact of connection (IP, timing,
+server logs) remains observable by the server. Accepted scope reduction, not
+connection anonymity. PIR is future work, not a core-protocol goal.
+
+### D12 — Proof-of-integrity is delivery, not receipt
+A server signing a *sealed* invoice proves "an invoice blob was delivered via
+this server", not that the recipient read its contents. Offline recipient XOR
+non-repudiable receipt: the sender's delivery is non-repudiable; the
+recipient's awareness is not proven.
+
 ## Open questions
 
 ### O1 — Indexer trust model
@@ -76,13 +101,16 @@ or harden it (ack computed but not persisted server-side, or encrypted under the
 session key so a transcript leak proves nothing post-hoc).
 
 ### O9 — Signature instrument choice
-keybase.io was shut down in 2023 (acquired by Zoom). A live "another keyserver"
-must be chosen before this is buildable.
+keybase.io was shut down in 2023 (acquired by Zoom). Options: a live keyserver,
+a protocol-level "opaque attestation" (key_id, signature, keyserver_url) that
+ship keybase as a reference implementation only, or attestation against an
+entry in the Zcash ledger (on-chain anchoring).
 
 ### O10 — Server auth details
 Exact signed-challenge format for domain-key auth: whether the challenge binds
 both parties' IDs, a session nonce, and a timestamp; whether the server's own
-signature on the challenge is needed at all; whether auth is mutual.
+signature on the challenge is needed at all; whether auth is mutual. Possibly
+replaced by a standard Noise handshake using the domain key as the static key.
 
 ### O11 — ECDH binding
 Whether the ECDH session-key exchange is bound to the domain-key auth, and
@@ -91,7 +119,8 @@ attacks.
 
 ### O12 — Address/invoice ordering
 Is the shielded address supplied up front, or only at the end after invoice
-acknowledgment?
+acknowledgment? Lean: ephemeral addresses issued immediately on request (one-
+shot, costs nothing); attested addresses confirmed after the invoice ack.
 
 ### O13 — Standalone challenge-response
 Whether a standalone challenge-response for interactive login is wanted (raw
@@ -99,6 +128,21 @@ RedJubjub over a nonce, verified against `ak` derived from the FVK). Note: only
 a custom client can produce it — no third-party Zcash wallet supports shielded
 message signing today (ZIP 304 is a draft and undeployed; no Orchard or UA
 equivalent exists).
+
+## Positioning (grant / ZIP / network upgrade)
+
+- **Not a network upgrade.** ZSMTP touches nothing on the consensus layer; it is
+  strictly Layer-2, private between two entities.
+- **Grant first, ZIP second.** Apply for a build grant with the core protocol as
+  the deliverable; use a draft ZIP alongside for legitimacy and to attract
+  protocol review. A ZIP *as a standard* is appropriate once proven, not before.
+- **Lead the pitch with use cases, not infrastructure.** The identity angle is
+  niche; the wedge is the exchange-deposit + proof-of-funds use cases (knowing
+  who to pay without ENS's linkability, attaching a private decryptable invoice
+  to a payment, proving funds to a service).
+- **Scope the grant tightly.** ZSMTP core is the fundable MVP; proof-of-funds
+  and loyalty-proof circuits each deserve their own grant-sized budgets as
+  follow-ons. A single grant asking for all of it reads as over-scoped.
 
 ## Next steps
 
@@ -108,3 +152,5 @@ equivalent exists).
 3. Resolve the remaining protocol questions in [`zsmtp.md`](zsmtp.md).
 4. Design secure_mailbox.sock (user-facing signing interface).
 5. Design mailbox.sock (HTTP/2 exposure, reverse proxy).
+6. Draft a grant-style summary positioned around exchange-deposit +
+   proof-of-funds use cases.
