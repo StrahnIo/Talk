@@ -12,8 +12,11 @@ decided and what remains open.
 
 | Document | Contents |
 |---|---|
-| [`architecture.md`](architecture.md) | Core model, inbox/outbox, key custody, send path, sockets |
+| [`architecture.md`](architecture.md) | Core model, inbox/outbox, key custody, send path, sockets, modular design |
 | [`zsmtp.md`](zsmtp.md) | ZSMTP protocol: federated identity, handshake, sealed invoice, deniability |
+| [`imap.md`](imap.md) | Hand-rolled IMAP mailbox server: subset, framing, schema, SQLCipher |
+| [`security.md`](security.md) | Model A, DK wrapper ladder, app passwords, trust boundaries |
+| [`attestation.md`](attestation.md) | Address + pubkey attestation flow |
 | [`plugins.md`](plugins.md) | Layer-2 plugin ideas: proof-of-funds, loyalty proofs, and more |
 | [`decisions.md`](decisions.md) | Decision log, open questions, grant/ZIP positioning |
 
@@ -25,6 +28,9 @@ SMTP-like identity and delivery, tuned for shielded addresses where address
 rotation and unlinkability are the norm (ENS-style central registries do not
 apply). Modeled on SMTP: handshake, DNS domain-key validation, secure sealed
 delivery of a transaction, and a Commit-Effect-Interact style P2P consensus.
+Reading happens through a hand-rolled IMAP mailbox that is server-blind
+end-to-end; a key-hierarchy "app password" scheme lets standard mail clients
+unlock messages without ever trusting the server.
 
 Intentional SMTP-like properties:
 
