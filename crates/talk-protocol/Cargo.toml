@@ -19,3 +19,4 @@ base64 = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+hex = "0.4"

@@ -12,8 +12,10 @@ pub mod codec;
 pub mod envelope;
 pub mod framing;
 pub mod handshake;
+pub mod session;
 pub mod status;
 
 pub use envelope::{Envelope, Payload, Recipient};
 pub use handshake::{Challenge, ChallengeResponse, DomainKey, HandshakeError};
+pub use session::{Reply, SessionState, ZsmptSession};
 pub use status::{Status, StatusCode};

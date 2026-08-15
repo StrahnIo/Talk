@@ -9,8 +9,8 @@
 //! so it cannot be replayed or abused as a signing oracle (O10).
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::rngs::OsRng;
 use rand::RngCore;
+use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -121,9 +121,7 @@ impl ChallengeResponse {
         receiver_pub: &VerifyingKey,
         max_age_secs: i64,
     ) -> Result<(), HandshakeError> {
-        if self.challenge.sender_domain.is_empty()
-            || self.challenge.receiver_domain.is_empty()
-        {
+        if self.challenge.sender_domain.is_empty() || self.challenge.receiver_domain.is_empty() {
             return Err(HandshakeError::DomainMismatch);
         }
         let age = now_secs() - self.challenge.issued_at;
