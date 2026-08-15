@@ -5,8 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 fn seed_store(dir: &tempfile::TempDir) -> Arc<SqliteMailStore> {
-    let store =
-        Arc::new(SqliteMailStore::open(dir.path().join("mailbox.db"), false, None).expect("open"));
+    let store = Arc::new(SqliteMailStore::open(dir.path().join("mailbox.db")).expect("open"));
     let user_id = store
         .create_user("alice", "hash", &[0u8; 32])
         .expect("create user")

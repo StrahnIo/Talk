@@ -6,8 +6,7 @@ use talk_mailstore::{MessageFlags, NewMessage, SqliteMailStore};
 
 fn setup() -> (tempfile::TempDir, Arc<SqliteMailStore>, i64) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store =
-        Arc::new(SqliteMailStore::open(dir.path().join("mailbox.db"), false, None).expect("open"));
+    let store = Arc::new(SqliteMailStore::open(dir.path().join("mailbox.db")).expect("open"));
     let user_id = store
         .create_user("alice", "hash", &[0u8; 32])
         .expect("create user")
@@ -187,4 +186,243 @@ fn response_helpers() {
         "A1 OK done\r\n"
     );
     assert_eq!(response::untagged("2 EXISTS"), "* 2 EXISTS\r\n");
+}
+
+#[test]
+fn login_with_wrong_user_rejected() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    let out = s.handle(&parse_cmd("A1 LOGIN nosuchuser secret"));
+    assert!(out.contains("A1 NO"));
+    assert_eq!(s.state, State::NotAuthenticated);
+}
+
+#[test]
+fn login_with_empty_password_rejected() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    let out = s.handle(&parse_cmd("A1 LOGIN alice \"\""));
+    assert!(out.contains("A1 NO"));
+}
+
+#[test]
+fn double_login_is_bad() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 LOGIN alice secret"));
+    assert!(out.contains("A2 BAD"));
+}
+
+#[test]
+fn authenticate_plain_flow() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    // SASL PLAIN token: authzid \0 authcid \0 password
+    let token = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        "\0alice\0secret",
+    );
+    let out = s.handle(&parse_cmd(&format!("A1 AUTHENTICATE PLAIN {token}")));
+    assert!(out.contains("A1 OK"));
+    assert_eq!(s.state, State::Authenticated);
+}
+
+#[test]
+fn authenticate_plain_malformed_payload() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    let token =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"too-few-parts");
+    let out = s.handle(&parse_cmd(&format!("A1 AUTHENTICATE PLAIN {token}")));
+    assert!(out.contains("A1 BAD"));
+}
+
+#[test]
+fn authenticate_plain_bad_base64() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    let out = s.handle(&parse_cmd("A1 AUTHENTICATE PLAIN !!!not-base64!!!"));
+    assert!(out.contains("A1 BAD"));
+}
+
+#[test]
+fn select_nonexistent_mailbox() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 SELECT NOSUCH"));
+    assert!(out.contains("A2 NO"));
+    assert_eq!(
+        s.state,
+        State::Authenticated,
+        "state unchanged on failed select"
+    );
+}
+
+#[test]
+fn list_shows_inbox() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 LIST \"\" \"*\""));
+    assert!(out.contains("INBOX"));
+    assert!(out.contains("A2 OK"));
+}
+
+#[test]
+fn list_requires_auth() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    let out = s.handle(&parse_cmd("A1 LIST \"\" \"*\""));
+    assert!(out.contains("A1 BAD"));
+}
+
+#[test]
+fn fetch_requires_selected() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 FETCH 1 BODY[]"));
+    assert!(out.contains("A2 BAD"));
+}
+
+#[test]
+fn fetch_empty_range_ok() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 FETCH 999 BODY[]"));
+    assert!(out.contains("A3 OK FETCH completed"));
+}
+
+#[test]
+fn store_without_selected_is_bad() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 STORE 1 +FLAGS (\\Seen)"));
+    assert!(out.contains("A2 BAD"));
+}
+
+#[test]
+fn store_unsupported_flag_is_bad() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 STORE 1 +FLAGS (\\NoSuchFlag)"));
+    assert!(out.contains("A3 BAD"));
+}
+
+#[test]
+fn store_remove_flag() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(Arc::clone(&store));
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    s.handle(&parse_cmd("A3 STORE 1 +FLAGS (\\Seen)"));
+    let out = s.handle(&parse_cmd("A4 STORE 1 -FLAGS (\\Seen)"));
+    assert!(out.contains("A4 OK STORE completed"));
+    let list = store.list_messages(s.user_id).expect("list");
+    assert!(!list[0].flags.is_seen());
+}
+
+#[test]
+fn search_all_matches_everything() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 SEARCH ALL"));
+    assert!(out.contains("SEARCH 1"));
+}
+
+#[test]
+fn uid_search_unseen() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 UID SEARCH UNSEEN"));
+    assert!(out.contains("SEARCH 1"));
+    assert!(out.contains("A3 OK"));
+}
+
+#[test]
+fn expunge_requires_selected() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 EXPUNGE"));
+    assert!(out.contains("A2 BAD"));
+}
+
+#[test]
+fn close_requires_selected() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 CLOSE"));
+    assert!(out.contains("A2 BAD"));
+}
+
+#[test]
+fn examine_is_like_select() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 EXAMINE INBOX"));
+    assert!(out.contains("* 1 EXISTS"));
+    assert!(out.contains("A2 OK"));
+    assert_eq!(s.state, State::Selected);
+}
+
+#[test]
+fn idle_requires_selected() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 IDLE"));
+    assert!(out.contains("A2 BAD"));
+}
+
+#[test]
+fn noop_works_in_any_state() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    let out = s.handle(&parse_cmd("A1 NOOP"));
+    assert!(out.contains("A1 OK NOOP completed"));
+}
+
+#[test]
+fn capability_reports_imap4rev1() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    let out = s.handle(&parse_cmd("A1 CAPABILITY"));
+    assert!(out.contains("IMAP4rev1"));
+    assert!(out.contains("IDLE"));
+    assert!(out.contains("AUTH=PLAIN"));
+}
+
+#[test]
+fn uid_fetch_range() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(Arc::clone(&store));
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 UID FETCH 1:2 BODY[]"));
+    assert!(out.contains("A3 OK FETCH completed"));
+}
+
+#[test]
+fn fetch_range_star() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 FETCH * BODY[]"));
+    assert!(out.contains("* 1 FETCH"));
+    assert!(out.contains("A3 OK FETCH completed"));
 }

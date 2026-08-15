@@ -131,7 +131,10 @@ impl Session {
         let exists = messages.len() as u32;
         let unseen = messages.iter().filter(|m| !m.flags.is_seen()).count() as u32;
         let uidvalidity = messages.first().map(|m| m.uidvalidity).unwrap_or(1);
-        let uidnext = messages.first().map(|m| m.uid + 1).unwrap_or(1);
+        let uidnext = self
+            .store
+            .uidnext(self.user_id)
+            .unwrap_or(messages.first().map(|m| m.uid + 1).unwrap_or(1));
         let mut out = response::select_responses(exists, unseen, uidvalidity, uidnext);
         out.push_str(&response::tagged(
             tag,

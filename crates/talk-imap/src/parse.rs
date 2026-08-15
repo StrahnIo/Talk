@@ -85,13 +85,14 @@ impl CommandReader {
                 .to_vec();
             self.buf.drain(..=line_end);
 
-            // If the line ends with a literal marker, strip it, remember the
-            // count, and continue assembling the same command line.
+            // If the line ends with a literal marker, strip it and remember the
+            // count. Return immediately so the caller can send the `+`
+            // continuation before more bytes arrive (required even for {0}).
             if let Some((count, marker_len)) = literal_count(&line) {
                 self.literal_remaining = Some(count);
                 self.pending_line
                     .extend_from_slice(&line[..line.len() - marker_len]);
-                continue;
+                return Ok(commands);
             }
 
             self.pending_line.extend_from_slice(&line);
@@ -290,5 +291,111 @@ mod tests {
         let cmds = r.feed(b"A1 FOO {999999999999}\r\n").unwrap();
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].args, vec!["{999999999999}"]);
+    }
+
+    #[test]
+    fn command_name_is_uppercased() {
+        let mut r = CommandReader::default();
+        let cmds = r.feed(b"a1 select inbox\r\n").unwrap();
+        assert_eq!(cmds[0].name, "SELECT");
+        assert_eq!(cmds[0].args, vec!["inbox"], "args keep case");
+    }
+
+    #[test]
+    fn multiple_commands_in_one_feed() {
+        let mut r = CommandReader::default();
+        let cmds = r.feed(b"A1 NOOP\r\nA2 NOOP\r\nA3 LOGOUT\r\n").unwrap();
+        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds[0].tag, "A1");
+        assert_eq!(cmds[1].tag, "A2");
+        assert_eq!(cmds[2].tag, "A3");
+    }
+
+    #[test]
+    fn escaped_quote_in_quoted_string() {
+        let mut r = CommandReader::default();
+        let cmds = r.feed(b"A1 LOGIN \"a\\\"b\" pass\r\n").unwrap();
+        assert_eq!(cmds[0].args, vec!["a\"b", "pass"]);
+    }
+
+    #[test]
+    fn nested_parentheses_are_single_token() {
+        let mut r = CommandReader::default();
+        let cmds = r.feed(b"A1 FETCH 1 (BODY[HEADER] (FLAGS))\r\n").unwrap();
+        assert_eq!(cmds[0].args[1], "(BODY[HEADER] (FLAGS))");
+    }
+
+    #[test]
+    fn unclosed_quote_is_error() {
+        let mut r = CommandReader::default();
+        assert_eq!(
+            r.feed(b"A1 LOGIN \"unclosed\r\n").unwrap_err(),
+            ParseError::UnclosedQuote
+        );
+    }
+
+    #[test]
+    fn unclosed_paren_is_error() {
+        let mut r = CommandReader::default();
+        assert_eq!(
+            r.feed(b"A1 FETCH 1 (FLAGS\r\n").unwrap_err(),
+            ParseError::UnclosedQuote
+        );
+    }
+
+    #[test]
+    fn literal_reassembles_command_correctly() {
+        // LOGIN with both args as literals, split across many tiny feeds.
+        let mut r = CommandReader::default();
+        let mut cmds = r.feed(b"X LOGIN {5}\r\n").unwrap();
+        assert!(cmds.is_empty());
+        cmds = r.feed(b"alice {6}\r\n").unwrap();
+        assert!(cmds.is_empty());
+        cmds = r.feed(b"h").unwrap();
+        assert!(cmds.is_empty());
+        cmds = r.feed(b"unter2\r\n").unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].args, vec!["alice", "hunter2"]);
+    }
+
+    #[test]
+    fn literal_in_middle_of_args() {
+        // FETCH 1 BODY[] with a literal for another arg in the middle.
+        let mut r = CommandReader::default();
+        let mut cmds = r.feed(b"Y STORE 1 +FLAGS {5}\r\n").unwrap();
+        assert!(cmds.is_empty());
+        cmds = r.feed(b"(\\Seen)").unwrap();
+        assert!(cmds.is_empty());
+        cmds = r.feed(b"\r\n").unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].name, "STORE");
+        assert_eq!(cmds[0].args, vec!["1", "+FLAGS", "(\\Seen)"]);
+    }
+
+    #[test]
+    fn needs_continuation_true_until_literal_done() {
+        let mut r = CommandReader::default();
+        r.feed(b"A LOGIN {10}\r\n").unwrap();
+        assert!(r.needs_continuation());
+        r.feed(b"partial").unwrap();
+        assert!(r.needs_continuation(), "still waiting for rest of literal");
+        r.feed(b"data\r\n").unwrap();
+        assert!(!r.needs_continuation());
+    }
+
+    #[test]
+    fn zero_length_literal() {
+        let mut r = CommandReader::default();
+        r.feed(b"A LOGIN {0}\r\n").unwrap();
+        assert!(r.needs_continuation());
+        let cmds = r.feed(b"\r\n").unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].name, "LOGIN");
+    }
+    #[test]
+    fn bare_atom_with_dot() {
+        let mut r = CommandReader::default();
+        let cmds = r.feed(b"A1 SEARCH SUBJECT foo.bar\r\n").unwrap();
+        assert_eq!(cmds[0].args, vec!["SUBJECT", "foo.bar"]);
     }
 }
