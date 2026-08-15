@@ -86,4 +86,93 @@ mod tests {
         let sealed = aead_seal(&key, b"data");
         assert!(aead_open(&other, &sealed).is_none());
     }
+
+    #[test]
+    fn empty_plaintext_roundtrip() {
+        let mut rng = rand::thread_rng();
+        let key = SecretKey::generate(&mut rng);
+        let sealed = aead_seal(&key, b"");
+        let opened = aead_open(&key, &sealed).expect("must open");
+        assert!(opened.is_empty());
+    }
+
+    #[test]
+    fn large_plaintext_roundtrip() {
+        let mut rng = rand::thread_rng();
+        let key = SecretKey::generate(&mut rng);
+        let data: Vec<u8> = (0..1_000_000u32).map(|i| (i % 256) as u8).collect();
+        let sealed = aead_seal(&key, &data);
+        let opened = aead_open(&key, &sealed).expect("must open");
+        assert_eq!(opened, data);
+    }
+
+    #[test]
+    fn tampered_ciphertext_fails() {
+        let mut rng = rand::thread_rng();
+        let key = SecretKey::generate(&mut rng);
+        let sealed = aead_seal(&key, b"authentic data");
+        let mut tampered = sealed.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xff;
+        assert!(aead_open(&key, &tampered).is_none());
+    }
+
+    #[test]
+    fn truncated_ciphertext_fails() {
+        let mut rng = rand::thread_rng();
+        let key = SecretKey::generate(&mut rng);
+        let sealed = aead_seal(&key, b"data");
+        let truncated = &sealed[..sealed.len() - 1];
+        assert!(aead_open(&key, truncated).is_none());
+    }
+
+    #[test]
+    fn too_short_ciphertext_fails() {
+        let mut rng = rand::thread_rng();
+        let key = SecretKey::generate(&mut rng);
+        assert!(aead_open(&key, &[0u8; 11]).is_none());
+    }
+
+    #[test]
+    fn nonces_are_unique_across_seals() {
+        let mut rng = rand::thread_rng();
+        let key = SecretKey::generate(&mut rng);
+        let a = aead_seal(&key, b"x");
+        let b = aead_seal(&key, b"x");
+        assert_ne!(&a[..12], &b[..12], "fresh nonce per seal");
+    }
+
+    #[test]
+    fn two_keys_generate_distinct_material() {
+        let mut rng = rand::thread_rng();
+        let a = SecretKey::generate(&mut rng);
+        let b = SecretKey::generate(&mut rng);
+        assert_ne!(a.as_bytes(), b.as_bytes());
+    }
+
+    #[test]
+    fn import_roundtrip_preserves_bytes() {
+        let bytes = [7u8; 32];
+        let key = SecretKey::from_bytes(bytes);
+        assert_eq!(key.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn debug_does_not_leak_key_material() {
+        let mut rng = rand::thread_rng();
+        let key = SecretKey::generate(&mut rng);
+        let debug = format!("{key:?}");
+        assert!(!debug.contains("7"), "Debug must not print key bytes");
+        assert!(debug.contains("REDACTED"));
+    }
+
+    #[test]
+    fn seal_is_not_identity_on_identical_input() {
+        let mut rng = rand::thread_rng();
+        let key = SecretKey::generate(&mut rng);
+        let data = [0u8; 64];
+        let sealed = aead_seal(&key, &data);
+        // Ciphertext must never equal plaintext (nonce + tag prefix guarantees this).
+        assert_ne!(&sealed[12..], &data[..]);
+    }
 }

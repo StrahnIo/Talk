@@ -144,4 +144,116 @@ mod tests {
         let revoked_set = scheme.wrap(&dk, &[shares[0].clone()]);
         assert!(scheme.unwrap(&shares[0], &revoked_set.wrappers[0]).is_ok());
     }
+
+    #[test]
+    fn share_ids_are_unique_within_set() {
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let shares = test_shares(8);
+        let scheme = PerShareWrapper;
+        let set = scheme.wrap(&dk, &shares);
+        let mut ids: Vec<ShareId> = set.wrappers.iter().map(|w| w.share_id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 8, "every share must carry a distinct id");
+    }
+
+    #[test]
+    fn share_ids_are_unique_across_wraps() {
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let shares = test_shares(2);
+        let scheme = PerShareWrapper;
+        let a = scheme.wrap(&dk, &shares);
+        let b = scheme.wrap(&dk, &shares);
+        for wa in &a.wrappers {
+            for wb in &b.wrappers {
+                assert_ne!(wa.share_id, wb.share_id, "fresh id per wrap");
+            }
+        }
+    }
+
+    #[test]
+    fn rewrap_preserves_dk() {
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let shares = test_shares(4);
+        let scheme = PerShareWrapper;
+
+        let original = scheme.wrap(&dk, &shares);
+        let original_dk = scheme
+            .unwrap(&shares[0], &original.wrappers[0])
+            .expect("unwrap");
+
+        // Re-wrap under survivors and confirm the same DK comes back.
+        let survivors: Vec<Share> = shares.iter().skip(1).cloned().collect();
+        let rewrapped = scheme.rewrap(&dk, &survivors);
+        let rewrapped_dk = scheme
+            .unwrap(&shares[1], &rewrapped.wrappers[0])
+            .expect("unwrap");
+        assert_eq!(original_dk.as_bytes(), rewrapped_dk.as_bytes());
+    }
+
+    #[test]
+    fn rewrap_with_zero_survivors_yields_empty_set() {
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let scheme = PerShareWrapper;
+        let empty: Vec<Share> = Vec::new();
+        let set = scheme.rewrap(&dk, &empty);
+        assert!(set.wrappers.is_empty());
+    }
+
+    #[test]
+    fn single_share_roundtrip() {
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let shares = test_shares(1);
+        let scheme = PerShareWrapper;
+        let set = scheme.wrap(&dk, &shares);
+        assert_eq!(set.wrappers.len(), 1);
+        let unwrapped = scheme.unwrap(&shares[0], &set.wrappers[0]).expect("unwrap");
+        assert_eq!(unwrapped.as_bytes(), dk.as_bytes());
+    }
+
+    #[test]
+    fn tampered_wrapper_fails() {
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let shares = test_shares(1);
+        let scheme = PerShareWrapper;
+        let set = scheme.wrap(&dk, &shares);
+        let mut wrapper = set.wrappers[0].clone();
+        let last = wrapper.wrapped.len() - 1;
+        wrapper.wrapped[last] ^= 0xff;
+        let err = scheme.unwrap(&shares[0], &wrapper).unwrap_err();
+        assert_eq!(err, ShareError::DecryptFailed);
+    }
+
+    #[test]
+    fn same_share_dk_wrappers_differ_each_time() {
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let shares = test_shares(1);
+        let scheme = PerShareWrapper;
+        let a = scheme.wrap(&dk, &shares);
+        let b = scheme.wrap(&dk, &shares);
+        assert_ne!(
+            a.wrappers[0].wrapped, b.wrappers[0].wrapped,
+            "fresh nonce per wrap"
+        );
+    }
+
+    #[test]
+    fn unwrap_keeps_dk_binding() {
+        // Unwrapping the same wrapper twice must yield the same DK.
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let shares = test_shares(1);
+        let scheme = PerShareWrapper;
+        let set = scheme.wrap(&dk, &shares);
+        let a = scheme.unwrap(&shares[0], &set.wrappers[0]).expect("first");
+        let b = scheme.unwrap(&shares[0], &set.wrappers[0]).expect("second");
+        assert_eq!(a.as_bytes(), b.as_bytes());
+    }
 }

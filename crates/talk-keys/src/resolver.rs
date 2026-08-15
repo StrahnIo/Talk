@@ -168,6 +168,40 @@ mod tests {
     }
 
     #[test]
+    fn share_resolver_rejects_master_credential() {
+        let (_, set) = test_share_set();
+        let scheme = PerShareWrapper;
+        let resolver = ShareResolver::new(&scheme, &set);
+        let master = SecretKey::generate(&mut rand::thread_rng());
+        assert!(resolver.unwrap(&Credential::Master(master)).is_err());
+    }
+
+    #[test]
+    fn share_resolver_empty_set_rejects_everything() {
+        let scheme = PerShareWrapper;
+        let set = WrappedDkSet {
+            wrappers: Vec::new(),
+        };
+        let resolver = ShareResolver::new(&scheme, &set);
+        let share = Share::generate(&mut rand::thread_rng());
+        assert!(resolver.unwrap(&Credential::Share(share)).is_err());
+    }
+
+    #[test]
+    fn share_resolver_recovers_original_dk() {
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let shares: Vec<Share> = (0..3).map(|_| Share::generate(&mut rng)).collect();
+        let scheme = PerShareWrapper;
+        let set = scheme.wrap(&dk, &shares);
+        let resolver = ShareResolver::new(&scheme, &set);
+        let unlocked = resolver
+            .unwrap(&Credential::Share(shares[0].clone()))
+            .expect("unlock");
+        assert_eq!(unlocked.as_bytes(), dk.as_bytes());
+    }
+
+    #[test]
     fn master_key_roundtrip() {
         let mut rng = rand::thread_rng();
         let dk = DataKey::generate(&mut rng);
@@ -182,5 +216,65 @@ mod tests {
             .unwrap(&master_priv, &wrapped)
             .expect("must unwrap");
         assert_eq!(unwrapped.as_bytes(), dk.as_bytes());
+    }
+
+    #[test]
+    fn master_key_wrong_key_fails() {
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let master_secret = StaticSecret::random_from_rng(&mut rng);
+        let master_pub = PublicKey::from(&master_secret);
+        let other_secret = StaticSecret::random_from_rng(&mut rng);
+
+        let resolver = MasterKeyResolver;
+        let wrapped = resolver.wrap(&dk, &master_pub, &mut rng);
+        let wrong_priv = SecretKey::from_bytes(other_secret.to_bytes());
+        assert!(resolver.unwrap(&wrong_priv, &wrapped).is_err());
+    }
+
+    #[test]
+    fn master_key_wrap_is_nondeterministic() {
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let master_secret = StaticSecret::random_from_rng(&mut rng);
+        let master_pub = PublicKey::from(&master_secret);
+        let resolver = MasterKeyResolver;
+
+        let a = resolver.wrap(&dk, &master_pub, &mut rng);
+        let b = resolver.wrap(&dk, &master_pub, &mut rng);
+        assert_ne!(a.ephemeral_pub, b.ephemeral_pub, "fresh ephemeral per wrap");
+        assert_ne!(a.wrapped, b.wrapped, "fresh nonce per wrap");
+    }
+
+    #[test]
+    fn master_key_tampered_wrapped_fails() {
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let master_secret = StaticSecret::random_from_rng(&mut rng);
+        let master_pub = PublicKey::from(&master_secret);
+
+        let resolver = MasterKeyResolver;
+        let mut wrapped = resolver.wrap(&dk, &master_pub, &mut rng);
+        let last = wrapped.wrapped.len() - 1;
+        wrapped.wrapped[last] ^= 0xff;
+        let master_priv = SecretKey::from_bytes(master_secret.to_bytes());
+        assert!(resolver.unwrap(&master_priv, &wrapped).is_err());
+    }
+
+    #[test]
+    fn master_key_unwrap_deterministic_across_keys() {
+        // The same wrap must open with the same private key regardless of how
+        // many times unwrap is called.
+        let mut rng = rand::thread_rng();
+        let dk = DataKey::generate(&mut rng);
+        let master_secret = StaticSecret::random_from_rng(&mut rng);
+        let master_pub = PublicKey::from(&master_secret);
+        let master_priv = SecretKey::from_bytes(master_secret.to_bytes());
+        let resolver = MasterKeyResolver;
+        let wrapped = resolver.wrap(&dk, &master_pub, &mut rng);
+
+        let a = resolver.unwrap(&master_priv, &wrapped).expect("first");
+        let b = resolver.unwrap(&master_priv, &wrapped).expect("second");
+        assert_eq!(a.as_bytes(), b.as_bytes());
     }
 }
