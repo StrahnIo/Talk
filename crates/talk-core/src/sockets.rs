@@ -1,3 +1,4 @@
+use std::os::unix::net::UnixListener as StdUnixListener;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::net::{UnixListener, UnixStream};
@@ -25,18 +26,25 @@ pub enum SocketError {
 }
 
 /// A bound Unix domain socket listener that removes its socket file on drop.
+///
+/// Binding uses a blocking std listener so it works without a tokio runtime.
+/// `accept` converts to tokio lazily (it is async and requires a runtime).
 pub struct SocketListener {
     pub path: PathBuf,
-    listener: UnixListener,
+    listener: StdUnixListener,
 }
 
 impl SocketListener {
     /// Bind a Unix domain socket at `path`, removing any stale socket file and
     /// creating parent directories first.
+    ///
+    /// A socket file is considered stale only if nothing is listening on it.
+    /// A live socket is never removed (that would steal another process's
+    /// listener); binding then fails with `Bind`.
     pub fn bind(path: impl Into<PathBuf>) -> Result<Self, SocketError> {
         let path = path.into();
 
-        if path.exists() {
+        if path.exists() && !is_listening(&path) {
             std::fs::remove_file(&path).map_err(|source| SocketError::StaleRemove {
                 path: path.clone(),
                 source,
@@ -52,7 +60,7 @@ impl SocketListener {
             })?;
         }
 
-        let listener = UnixListener::bind(&path).map_err(|source| SocketError::Bind {
+        let listener = StdUnixListener::bind(&path).map_err(|source| SocketError::Bind {
             path: path.clone(),
             source,
         })?;
@@ -60,9 +68,12 @@ impl SocketListener {
         Ok(Self { path, listener })
     }
 
-    /// Accept the next connection.
+    /// Accept the next connection. Requires a tokio runtime.
     pub async fn accept(&self) -> std::io::Result<(UnixStream, tokio::net::unix::SocketAddr)> {
-        self.listener.accept().await
+        let clone = self.listener.try_clone()?;
+        clone.set_nonblocking(true)?;
+        let tokio_listener = UnixListener::from_std(clone)?;
+        tokio_listener.accept().await
     }
 
     pub fn local_path(&self) -> &Path {
@@ -74,4 +85,13 @@ impl Drop for SocketListener {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+/// Whether another process is currently listening on the socket at `path`.
+///
+/// A successful `connect` means a live listener accepted (or queued) our
+/// connection; a stale socket file yields `ECONNREFUSED`.
+fn is_listening(path: &Path) -> bool {
+    use std::os::unix::net::UnixStream;
+    UnixStream::connect(path).is_ok()
 }
