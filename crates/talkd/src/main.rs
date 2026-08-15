@@ -7,6 +7,8 @@ use talk_protocol::server as zsmpt_server;
 use talk_wallet::LightwalletdClient;
 use tracing::{error, info, warn};
 
+mod sink;
+
 #[derive(Debug, Parser)]
 #[command(name = "talkd", version, about = "ZSMTP mail daemon for Zcash")]
 struct Cli {
@@ -43,7 +45,12 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     let zsmtp = SocketListener::bind(&cfg.sockets.zsmtp)?;
     info!(path = %zsmtp.local_path().display(), "zsmtp.sock listening");
 
-    // Serve ZSMTP sessions on the zsmtp socket.
+    // Open the mailbox store.
+    let mailbox_db = cfg.general.data_dir.join("mailbox.db");
+    let store = Arc::new(SqliteMailStore::open(&mailbox_db)?);
+    info!(path = %mailbox_db.display(), "mailbox store open");
+
+    // Serve ZSMTP sessions on the zsmtp socket, delivering into the store.
     let zsmtp_domain = cfg
         .general
         .data_dir
@@ -51,14 +58,10 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "talkd.local".to_string());
     let zsmtp_listener = zsmtp.to_tokio()?;
-    tokio::spawn(zsmpt_server::serve(zsmtp_domain, zsmtp_listener));
+    let sink = Arc::new(sink::StoreDeliverySink::new(store.clone()));
+    tokio::spawn(zsmpt_server::serve(zsmtp_domain, sink, zsmtp_listener));
 
-    // Open the mailbox store.
-    let mailbox_db = cfg.general.data_dir.join("mailbox.db");
-    let store = SqliteMailStore::open(&mailbox_db)?;
-    info!(path = %mailbox_db.display(), "mailbox store open");
-
-    let imap = ImapServer::new(Arc::new(store), "talkd");
+    let imap = ImapServer::new(store, "talkd");
     let imap_addr = cfg.sockets.imap_listen.clone();
     tokio::spawn(async move {
         if let Err(e) = imap.listen(&imap_addr).await {

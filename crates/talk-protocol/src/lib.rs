@@ -18,5 +18,5 @@ pub mod status;
 
 pub use envelope::{Envelope, Payload, Recipient};
 pub use handshake::{Challenge, ChallengeResponse, DomainKey, HandshakeError};
-pub use session::{Reply, SessionState, ZsmptSession};
+pub use session::{DeliveryOutcome, DeliverySink, Reply, SessionState, ZsmptSession};
 pub use status::{Status, StatusCode};

@@ -218,6 +218,19 @@ impl SqliteMailStore {
         Ok(uidnext as u32)
     }
 
+    /// The user's DK wrappers: `(share_id, wrapped_dk)` for every non-revoked
+    /// share. Used by app-password login to unwrap the data key.
+    pub fn get_shares(&self, user_id: i64) -> Result<Vec<(String, Vec<u8>)>, StoreError> {
+        let guard = self.lock()?;
+        let mut stmt = guard.prepare(
+            "SELECT share_id, wrapped_dk FROM shares WHERE user_id = ?1 AND revoked = 0",
+        )?;
+        let rows = stmt
+            .query_map(params![user_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Fetch a full message (including body) by message row id.
     pub fn fetch_message(&self, user_id: i64, message_id: i64) -> Result<Message, StoreError> {
         let (mailbox_id, uidvalidity, _) = self.mailbox_row(user_id)?;

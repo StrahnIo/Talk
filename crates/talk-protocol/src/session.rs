@@ -3,6 +3,7 @@
 use crate::codec::{AddrMode, Command};
 use crate::handshake::{Challenge, ChallengeResponse, DomainKey};
 use crate::status::{Status, StatusCode};
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Session phases, mirroring SMTP.
@@ -22,6 +23,31 @@ pub enum SessionError {
     State(String),
 }
 
+/// Outcome of a delivery attempt, mapped to a ZSMTP status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryOutcome {
+    /// Accepted (250 queued).
+    Accepted { message_id: String },
+    /// Permanently rejected (550) — e.g. unknown recipient or duplicate.
+    Rejected { reason: String },
+    /// Transient failure (450) — retry later.
+    RetryLater { reason: String },
+}
+
+/// A sink that receives delivered invoices. Implemented by the daemon to wire
+/// ZSMTP delivery into the mailbox store, keeping `talk-protocol` decoupled
+/// from storage.
+pub trait DeliverySink: Send + Sync {
+    fn deliver(
+        &self,
+        sender_server: &str,
+        message_id: &str,
+        recipient_mailbox: &str,
+        payload: crate::envelope::Payload,
+        body: &[u8],
+    ) -> DeliveryOutcome;
+}
+
 /// A reply to a client command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
@@ -34,14 +60,17 @@ pub enum Reply {
 /// The ZSMTP server session bound to one connection.
 ///
 /// v1 covers the handshake (HELLO/AUTH), address attestation (ADDR), and
-/// invoice acceptance (INVOICE -> 250 queued). Actual mailbox delivery is
-/// wired up by the daemon using the returned envelope (M5).
+/// invoice delivery (INVOICE -> 250 queued) via a pluggable `DeliverySink`.
 pub struct ZsmptSession {
     pub state: SessionState,
     pub domain: String,
     domain_key: DomainKey,
     /// The peer domain after a successful AUTH.
     pub peer_domain: Option<String>,
+    /// The user requested in the last ADDR command (delivery recipient).
+    addr_user: Option<String>,
+    /// Where delivered invoices go.
+    sink: Option<Arc<dyn DeliverySink>>,
 }
 
 impl ZsmptSession {
@@ -52,7 +81,16 @@ impl ZsmptSession {
             domain_key: DomainKey::generate(&domain),
             domain: domain.clone(),
             peer_domain: None,
+            addr_user: None,
+            sink: None,
         }
+    }
+
+    /// Attach a delivery sink. Without one, INVOICE is accepted without
+    /// storing (used by standalone tests).
+    pub fn with_sink(mut self, sink: Arc<dyn DeliverySink>) -> Self {
+        self.sink = Some(sink);
+        self
     }
 
     /// The greeting banner sent on connection.
@@ -183,11 +221,12 @@ impl ZsmptSession {
         }
         // v1: attestation of an ephemeral/attested address is a placeholder
         // envelope. The actual shielded-address generation and domain-key
-        // signature over (address, pubkey) is wired up in a later milestone.
+        // signature over (address, pubkey) is wired up in M5b.
         let mode = match mode {
             AddrMode::Ephemeral => "ephemeral",
             AddrMode::Attested => "attested",
         };
+        self.addr_user = Some(user.to_string());
         let payload = format!("{mode}|{user}");
         Ok(Reply::StatusWithBlob(
             Status::new(StatusCode::OK, "address attestation"),
@@ -198,8 +237,8 @@ impl ZsmptSession {
     fn on_invoice(
         &mut self,
         message_id: &str,
-        _payload: crate::envelope::Payload,
-        _body: &[u8],
+        payload: crate::envelope::Payload,
+        body: &[u8],
     ) -> Result<Reply, SessionError> {
         if self.state != SessionState::Authenticated {
             return Ok(Reply::Status(Status::new(
@@ -213,12 +252,38 @@ impl ZsmptSession {
                 "INVOICE requires a message id",
             )));
         }
-        // Accepted into the mailbox queue; dedup and delivery are handled
-        // downstream by the daemon.
-        Ok(Reply::Status(Status::new(
-            StatusCode::OK_QUEUED,
-            format!("accepted into inbox ({message_id})"),
-        )))
+        let Some(recipient_user) = self.addr_user.clone() else {
+            return Ok(Reply::Status(Status::new(
+                StatusCode::BAD_SEQUENCE,
+                "INVOICE requires a prior ADDR",
+            )));
+        };
+        let Some(sender) = self.peer_domain.clone() else {
+            return Ok(Reply::Status(Status::new(
+                StatusCode::BAD_SEQUENCE,
+                "INVOICE requires a sender",
+            )));
+        };
+        let Some(sink) = &self.sink else {
+            // No sink attached: accept without storing (standalone testing).
+            return Ok(Reply::Status(Status::new(
+                StatusCode::OK_QUEUED,
+                format!("accepted into inbox ({message_id})"),
+            )));
+        };
+        let mailbox = format!("{recipient_user}@{}", self.domain);
+        match sink.deliver(&sender, message_id, &mailbox, payload, body) {
+            DeliveryOutcome::Accepted { message_id } => Ok(Reply::Status(Status::new(
+                StatusCode::OK_QUEUED,
+                format!("accepted into inbox ({message_id})"),
+            ))),
+            DeliveryOutcome::Rejected { reason } => {
+                Ok(Reply::Status(Status::new(StatusCode::PERM_REJECT, reason)))
+            }
+            DeliveryOutcome::RetryLater { reason } => {
+                Ok(Reply::Status(Status::new(StatusCode::TRY_LATER, reason)))
+            }
+        }
     }
 }
 
@@ -413,6 +478,11 @@ mod tests {
     #[test]
     fn invoice_accepted_when_authenticated() {
         let mut s = authenticated_session();
+        s.handle(&Command::Addr {
+            mode: AddrMode::Ephemeral,
+            user: "alice".into(),
+        })
+        .unwrap();
         let reply = s
             .handle(&Command::Invoice {
                 message_id: "m1".into(),
@@ -430,8 +500,114 @@ mod tests {
     }
 
     #[test]
+    fn invoice_without_addr_is_sequence_error() {
+        let mut s = authenticated_session();
+        let reply = s
+            .handle(&Command::Invoice {
+                message_id: "m1".into(),
+                payload: crate::envelope::Payload::Sealed,
+                body: vec![1, 2, 3],
+            })
+            .unwrap();
+        assert_eq!(
+            reply,
+            Reply::Status(Status::new(
+                StatusCode::BAD_SEQUENCE,
+                "INVOICE requires a prior ADDR"
+            ))
+        );
+    }
+
+    #[test]
+    fn invoice_delivers_to_sink() {
+        use std::sync::Mutex;
+        struct Sink(Mutex<Vec<(String, String, String)>>);
+        impl DeliverySink for Sink {
+            fn deliver(
+                &self,
+                sender: &str,
+                message_id: &str,
+                mailbox: &str,
+                _payload: crate::envelope::Payload,
+                _body: &[u8],
+            ) -> DeliveryOutcome {
+                self.0.lock().unwrap().push((
+                    sender.to_string(),
+                    message_id.to_string(),
+                    mailbox.to_string(),
+                ));
+                DeliveryOutcome::Accepted {
+                    message_id: message_id.to_string(),
+                }
+            }
+        }
+
+        let sink = Arc::new(Sink(Mutex::new(Vec::new())));
+        let mut s = authenticated_session().with_sink(sink.clone());
+        s.handle(&Command::Addr {
+            mode: AddrMode::Ephemeral,
+            user: "alice".into(),
+        })
+        .unwrap();
+        s.handle(&Command::Invoice {
+            message_id: "m42".into(),
+            payload: crate::envelope::Payload::Sealed,
+            body: b"blob".to_vec(),
+        })
+        .unwrap();
+
+        let calls = sink.0.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "sender.example.com");
+        assert_eq!(calls[0].1, "m42");
+        assert_eq!(calls[0].2, "alice@receiver.example.org");
+    }
+
+    #[test]
+    fn invoice_rejected_by_sink_maps_to_550() {
+        struct Reject;
+        impl DeliverySink for Reject {
+            fn deliver(
+                &self,
+                _s: &str,
+                _m: &str,
+                _b: &str,
+                _p: crate::envelope::Payload,
+                _body: &[u8],
+            ) -> DeliveryOutcome {
+                DeliveryOutcome::Rejected {
+                    reason: "no such recipient".into(),
+                }
+            }
+        }
+
+        let mut s = authenticated_session().with_sink(Arc::new(Reject));
+        s.handle(&Command::Addr {
+            mode: AddrMode::Ephemeral,
+            user: "ghost".into(),
+        })
+        .unwrap();
+        let reply = s
+            .handle(&Command::Invoice {
+                message_id: "m1".into(),
+                payload: crate::envelope::Payload::Plaintext,
+                body: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            reply,
+            Reply::Status(Status::new(StatusCode::PERM_REJECT, "no such recipient"))
+        );
+    }
+
+    #[test]
     fn invoice_empty_message_id_is_syntax_error() {
         let mut s = authenticated_session();
+        s.handle(&Command::Addr {
+            mode: AddrMode::Ephemeral,
+            user: "alice".into(),
+        })
+        .unwrap();
         let reply = s
             .handle(&Command::Invoice {
                 message_id: String::new(),
