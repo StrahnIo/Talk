@@ -11,7 +11,9 @@
 pub mod codec;
 pub mod envelope;
 pub mod framing;
+pub mod handshake;
 pub mod status;
 
 pub use envelope::{Envelope, Payload, Recipient};
+pub use handshake::{Challenge, ChallengeResponse, DomainKey, HandshakeError};
 pub use status::{Status, StatusCode};
