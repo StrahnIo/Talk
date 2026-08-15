@@ -12,6 +12,7 @@ pub mod codec;
 pub mod envelope;
 pub mod framing;
 pub mod handshake;
+pub mod server;
 pub mod session;
 pub mod status;
 

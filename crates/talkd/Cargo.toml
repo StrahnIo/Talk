@@ -19,4 +19,5 @@ tracing-subscriber = { workspace = true }
 talk-core = { path = "../talk-core" }
 talk-imap = { path = "../talk-imap" }
 talk-mailstore = { path = "../talk-mailstore" }
+talk-protocol = { path = "../talk-protocol" }
 talk-wallet = { path = "../talk-wallet" }

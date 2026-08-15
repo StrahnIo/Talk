@@ -3,6 +3,7 @@ use std::sync::Arc;
 use talk_core::{config::Config, logging, sockets::SocketListener};
 use talk_imap::server::ImapServer;
 use talk_mailstore::SqliteMailStore;
+use talk_protocol::server as zsmpt_server;
 use talk_wallet::LightwalletdClient;
 use tracing::{error, info, warn};
 
@@ -41,6 +42,16 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
 
     let zsmtp = SocketListener::bind(&cfg.sockets.zsmtp)?;
     info!(path = %zsmtp.local_path().display(), "zsmtp.sock listening");
+
+    // Serve ZSMTP sessions on the zsmtp socket.
+    let zsmtp_domain = cfg
+        .general
+        .data_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "talkd.local".to_string());
+    let zsmtp_listener = zsmtp.to_tokio()?;
+    tokio::spawn(zsmpt_server::serve(zsmtp_domain, zsmtp_listener));
 
     // Open the mailbox store.
     let mailbox_db = cfg.general.data_dir.join("mailbox.db");

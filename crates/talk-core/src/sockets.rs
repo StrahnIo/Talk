@@ -76,6 +76,14 @@ impl SocketListener {
         tokio_listener.accept().await
     }
 
+    /// Convert to a tokio listener for long-lived accept loops. Requires a
+    /// tokio runtime; the original remains usable for further converts.
+    pub fn to_tokio(&self) -> std::io::Result<UnixListener> {
+        let clone = self.listener.try_clone()?;
+        clone.set_nonblocking(true)?;
+        UnixListener::from_std(clone)
+    }
+
     pub fn local_path(&self) -> &Path {
         &self.path
     }
