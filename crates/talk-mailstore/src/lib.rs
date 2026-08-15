@@ -109,8 +109,6 @@ pub enum StoreError {
     MessageNotFound,
     #[error("duplicate message id {0}")]
     DuplicateMessage(String),
-    #[error("encryption requested but no passphrase supplied")]
-    NoPassphrase,
     #[error("storage: {0}")]
     Storage(#[from] rusqlite::Error),
     #[error("io: {0}")]

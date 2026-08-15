@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, UNIX_EPOCH};
 
-/// A mail store backed by SQLite, with optional SQLCipher at-rest encryption.
+/// A mail store backed by SQLite.
 ///
-/// When `encrypt_db` is set, the caller must supply a key via `set_key` before
-/// any data access, matching `PRAGMA key`.
+/// v1 uses plain bundled SQLite. SQLCipher at-rest encryption is deferred: it
+/// cannot coexist in one process with `zcash_client_sqlite`'s plain `bundled`
+/// sqlite (the two require mutually-exclusive `libsqlite3-sys` features). If
+/// at-rest encryption is required, the mailbox must run as a separate process.
 pub struct SqliteMailStore {
     path: PathBuf,
     conn: Mutex<Connection>,
@@ -16,16 +18,8 @@ pub struct SqliteMailStore {
 impl SqliteMailStore {
     /// Open (or create) the store at `path`.
     ///
-    /// When `encrypt_db` is true, SQLCipher at-rest encryption is enabled with
-    /// `passphrase`. The key must be applied before any schema or data write,
-    /// so it is handled here rather than as a separate step.
-    ///
     /// The store is INBOX-only for v1: each user gets exactly one mailbox.
-    pub fn open(
-        path: impl Into<PathBuf>,
-        encrypt_db: bool,
-        passphrase: Option<&str>,
-    ) -> Result<Self, StoreError> {
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let path = path.into();
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -33,12 +27,6 @@ impl SqliteMailStore {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(&path)?;
-        if encrypt_db {
-            let passphrase = passphrase.ok_or(StoreError::NoPassphrase)?;
-            conn.pragma_update(None, "key", passphrase)?;
-            // Force a read to surface a wrong-key error early.
-            conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
-        }
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let store = Self {
@@ -78,6 +66,7 @@ impl SqliteMailStore {
                 user_id     INTEGER NOT NULL REFERENCES users(id),
                 name        TEXT    NOT NULL,
                 uidvalidity INTEGER NOT NULL,
+                uidnext     INTEGER NOT NULL DEFAULT 1,
                 UNIQUE (user_id, name)
             );
 
@@ -145,13 +134,13 @@ impl SqliteMailStore {
         rows.next().transpose().map_err(StoreError::from)
     }
 
-    fn mailbox_row(&self, user_id: i64) -> Result<(i64, u32), StoreError> {
+    fn mailbox_row(&self, user_id: i64) -> Result<(i64, u32, i64), StoreError> {
         let guard = self.lock()?;
         guard
             .query_row(
-                "SELECT id, uidvalidity FROM mailboxes WHERE user_id = ?1 AND name = 'INBOX'",
+                "SELECT id, uidvalidity, uidnext FROM mailboxes WHERE user_id = ?1 AND name = 'INBOX'",
                 params![user_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(StoreError::from)?
@@ -159,8 +148,11 @@ impl SqliteMailStore {
     }
 
     /// Append a message to a user's INBOX. Fails on duplicate message id.
+    ///
+    /// UIDs are allocated from the mailbox's monotonic `uidnext` counter and are
+    /// never reused, even after expunge (IMAP requirement).
     pub fn append_message(&self, user_id: i64, msg: NewMessage) -> Result<MessageMeta, StoreError> {
-        let (mailbox_id, uidvalidity) = self.mailbox_row(user_id)?;
+        let (mailbox_id, uidvalidity, uidnext) = self.mailbox_row(user_id)?;
         let guard = self.lock()?;
         let exists: i64 = guard.query_row(
             "SELECT count(*) FROM messages WHERE mailbox_id = ?1 AND message_id = ?2",
@@ -170,11 +162,7 @@ impl SqliteMailStore {
         if exists > 0 {
             return Err(StoreError::DuplicateMessage(msg.message_id));
         }
-        let uid: i64 = guard.query_row(
-            "SELECT COALESCE(MAX(uid), 0) + 1 FROM messages WHERE mailbox_id = ?1",
-            params![mailbox_id],
-            |row| row.get(0),
-        )?;
+        let uid = uidnext;
         let internaldate = now_secs();
         let size = msg.body.len() as i64;
         guard.execute(
@@ -192,6 +180,10 @@ impl SqliteMailStore {
                 msg.body,
             ],
         )?;
+        guard.execute(
+            "UPDATE mailboxes SET uidnext = uidnext + 1 WHERE id = ?1",
+            params![mailbox_id],
+        )?;
         Ok(MessageMeta {
             id: guard.last_insert_rowid(),
             message_id: msg.message_id,
@@ -206,7 +198,7 @@ impl SqliteMailStore {
 
     /// List message metadata for a user's INBOX, newest first.
     pub fn list_messages(&self, user_id: i64) -> Result<Vec<MessageMeta>, StoreError> {
-        let (mailbox_id, uidvalidity) = self.mailbox_row(user_id)?;
+        let (mailbox_id, uidvalidity, _) = self.mailbox_row(user_id)?;
         let guard = self.lock()?;
         let mut stmt = guard.prepare(
             "SELECT id, message_id, uid, internaldate, flags, subject, size
@@ -219,9 +211,16 @@ impl SqliteMailStore {
         Ok(rows)
     }
 
+    /// The next UID the mailbox would allocate (UIDNEXT), i.e. the monotonic
+    /// counter that is never reused even after expunge.
+    pub fn uidnext(&self, user_id: i64) -> Result<u32, StoreError> {
+        let (_, _, uidnext) = self.mailbox_row(user_id)?;
+        Ok(uidnext as u32)
+    }
+
     /// Fetch a full message (including body) by message row id.
     pub fn fetch_message(&self, user_id: i64, message_id: i64) -> Result<Message, StoreError> {
-        let (mailbox_id, uidvalidity) = self.mailbox_row(user_id)?;
+        let (mailbox_id, uidvalidity, _) = self.mailbox_row(user_id)?;
         let guard = self.lock()?;
         guard
             .query_row(
@@ -248,7 +247,7 @@ impl SqliteMailStore {
         mask: u32,
         value: bool,
     ) -> Result<(), StoreError> {
-        let (mailbox_id, _) = self.mailbox_row(user_id)?;
+        let (mailbox_id, _, _) = self.mailbox_row(user_id)?;
         let guard = self.lock()?;
         if value {
             guard.execute(
@@ -266,7 +265,7 @@ impl SqliteMailStore {
 
     /// Expunge (delete) messages flagged \Deleted.
     pub fn expunge(&self, user_id: i64) -> Result<Vec<u32>, StoreError> {
-        let (mailbox_id, _) = self.mailbox_row(user_id)?;
+        let (mailbox_id, _, _) = self.mailbox_row(user_id)?;
         let guard = self.lock()?;
         let mut stmt = guard.prepare(
             "SELECT uid FROM messages
