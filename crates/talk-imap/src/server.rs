@@ -7,20 +7,36 @@ use std::sync::Arc;
 use talk_mailstore::SqliteMailStore;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::broadcast;
 use tracing::{info, warn};
+
+/// A mailbox event broadcast to IDLE sessions.
+#[derive(Debug, Clone)]
+pub enum MailboxEvent {
+    /// A message was appended to a user's INBOX.
+    MessageAppended { user_id: i64 },
+}
 
 /// Server handle holding shared state.
 pub struct ImapServer {
     store: Arc<SqliteMailStore>,
     hostname: String,
+    events: broadcast::Sender<MailboxEvent>,
 }
 
 impl ImapServer {
     pub fn new(store: Arc<SqliteMailStore>, hostname: impl Into<String>) -> Self {
+        let (events, _) = broadcast::channel(64);
         Self {
             store,
             hostname: hostname.into(),
+            events,
         }
+    }
+
+    /// The event sender, used by the delivery path to notify IDLE sessions.
+    pub fn event_sender(&self) -> broadcast::Sender<MailboxEvent> {
+        self.events.clone()
     }
 
     fn new_session(&self) -> Session {
@@ -55,6 +71,7 @@ impl Clone for ImapServer {
         Self {
             store: self.store.clone(),
             hostname: self.hostname.clone(),
+            events: self.events.clone(),
         }
     }
 }
@@ -68,6 +85,7 @@ pub async fn serve_connection<S: AsyncRead + AsyncWrite + Unpin>(
     let mut reader = CommandReader::default();
     let mut buf = [0u8; 4096];
     let mut out = response::greeting(&server.hostname);
+    let mut events_rx = server.events.subscribe();
 
     stream.write_all(out.as_bytes()).await?;
     stream.flush().await?;
@@ -114,10 +132,17 @@ pub async fn serve_connection<S: AsyncRead + AsyncWrite + Unpin>(
                     .write_all(response::continuation("idle").as_bytes())
                     .await?;
                 stream.flush().await?;
-                let done = idle_until_done(stream, &mut reader, &mut buf).await?;
+                let done = idle_until_done(stream, &mut reader, &mut buf, &mut events_rx, &session)
+                    .await?;
                 if done {
                     return Ok(());
                 }
+                // IDLE terminated: emit the tagged completion.
+                out.push_str(&response::tagged(
+                    &cmd.tag,
+                    crate::response::Status::Ok,
+                    "IDLE terminated",
+                ));
                 continue;
             }
             if cmd.name == "LOGOUT" {
@@ -135,24 +160,47 @@ pub async fn serve_connection<S: AsyncRead + AsyncWrite + Unpin>(
     }
 }
 
-/// After an IDLE continuation, read until `DONE` (case-insensitive) or EOF.
-async fn idle_until_done<S: AsyncRead + Unpin>(
+/// While in IDLE, wait for either `DONE` or a mailbox event for this session.
+///
+/// On an event for the session's user, emit `* n EXISTS` (recomputed from the
+/// store) and keep idling.
+async fn idle_until_done<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     reader: &mut CommandReader,
     buf: &mut [u8],
+    events_rx: &mut broadcast::Receiver<MailboxEvent>,
+    session: &Session,
 ) -> std::io::Result<bool> {
     loop {
-        let n = match stream.read(buf).await? {
-            0 => return Ok(true),
-            n => n,
-        };
-        let commands = match reader.feed(&buf[..n]) {
-            Ok(c) => c,
-            Err(_) => return Ok(true),
-        };
-        for cmd in commands {
-            if cmd.name == "DONE" {
-                return Ok(false);
+        tokio::select! {
+            n = stream.read(buf) => {
+                let n = n?;
+                if n == 0 {
+                    return Ok(true);
+                }
+                let commands = match reader.feed(&buf[..n]) {
+                    Ok(c) => c,
+                    Err(_) => return Ok(true),
+                };
+                for cmd in commands {
+                    if cmd.name == "DONE" {
+                        return Ok(false);
+                    }
+                }
+            }
+            ev = events_rx.recv() => {
+                match ev {
+                    Ok(MailboxEvent::MessageAppended { user_id }) if user_id == session.user_id => {
+                        let count = session.store.list_messages(user_id)
+                            .map(|m| m.len())
+                            .unwrap_or(0);
+                        stream.write_all(response::untagged(&format!("{count} EXISTS")).as_bytes()).await?;
+                        stream.flush().await?;
+                    }
+                    Ok(_) => { /* event for another user; ignore */ }
+                    Err(broadcast::error::RecvError::Lagged(_)) => { /* client resyncs on NOOP */ }
+                    Err(broadcast::error::RecvError::Closed) => return Ok(true),
+                }
             }
         }
     }

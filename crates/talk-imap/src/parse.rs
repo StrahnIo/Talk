@@ -132,6 +132,14 @@ fn parse_line(line: &[u8]) -> Result<ParsedCommand, ParseError> {
     if tokens.is_empty() {
         return Err(ParseError::InvalidCommand);
     }
+    // A single token is a tag-less command (e.g. `DONE` during IDLE).
+    if tokens.len() == 1 {
+        return Ok(ParsedCommand {
+            tag: String::new(),
+            name: tokens[0].to_ascii_uppercase(),
+            args: Vec::new(),
+        });
+    }
     let tag = tokens.remove(0);
     let name = tokens.remove(0);
     let name = name.to_ascii_uppercase();
@@ -397,5 +405,14 @@ mod tests {
         let mut r = CommandReader::default();
         let cmds = r.feed(b"A1 SEARCH SUBJECT foo.bar\r\n").unwrap();
         assert_eq!(cmds[0].args, vec!["SUBJECT", "foo.bar"]);
+    }
+
+    #[test]
+    fn single_token_is_tagless_command() {
+        let mut r = CommandReader::default();
+        let cmds = r.feed(b"DONE\r\n").unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].name, "DONE");
+        assert_eq!(cmds[0].tag, "", "no tag for bare command");
     }
 }

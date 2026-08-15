@@ -115,3 +115,79 @@ async fn listens_on_tcp() {
     assert!(greeting.contains("* OK"), "greeting: {greeting}");
     assert!(greeting.contains("CAPABILITY"), "caps: {greeting}");
 }
+
+#[tokio::test]
+async fn idle_receives_new_message_event() {
+    use talk_imap::server::MailboxEvent;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = seed_store(&dir);
+    let server = ImapServer::new(store.clone(), "talk.test");
+    let events = server.event_sender();
+
+    let (mut client, server_stream) = tokio::io::duplex(8192);
+    tokio::spawn(async move {
+        let mut stream = server_stream;
+        let _ = serve_connection(&mut stream, &server).await;
+    });
+
+    let mut buf = [0u8; 4096];
+    let mut got = String::new();
+    read_until(&mut client, &mut buf, &mut got, "* OK")
+        .await
+        .unwrap();
+    client
+        .write_all(b"A1 LOGIN alice secret\r\n")
+        .await
+        .unwrap();
+    read_until(&mut client, &mut buf, &mut got, "A1 OK")
+        .await
+        .unwrap();
+    client.write_all(b"A2 SELECT INBOX\r\n").await.unwrap();
+    read_until(&mut client, &mut buf, &mut got, "A2 OK")
+        .await
+        .unwrap();
+
+    // Enter IDLE: server replies `+ idle`, then waits.
+    client.write_all(b"A3 IDLE\r\n").await.unwrap();
+    read_until(&mut client, &mut buf, &mut got, "+ idle")
+        .await
+        .unwrap();
+
+    // Append a message for alice and fire the event.
+    let user_id = store
+        .get_user("alice")
+        .expect("get user")
+        .expect("exists")
+        .id;
+    store
+        .append_message(
+            user_id,
+            NewMessage {
+                message_id: "msg-2".to_string(),
+                subject: "New sealed invoice".to_string(),
+                body: b"more".to_vec(),
+                flags: MessageFlags::default(),
+            },
+        )
+        .expect("append");
+    events
+        .send(MailboxEvent::MessageAppended { user_id })
+        .expect("send");
+
+    // The IDLE session must emit `* 2 EXISTS` (now two messages).
+    read_until(&mut client, &mut buf, &mut got, "2 EXISTS")
+        .await
+        .unwrap();
+
+    // Leave IDLE and log out cleanly.
+    client.write_all(b"DONE\r\n").await.unwrap();
+    read_until(&mut client, &mut buf, &mut got, "A3 OK")
+        .await
+        .unwrap();
+    client.write_all(b"A4 LOGOUT\r\n").await.unwrap();
+    read_until(&mut client, &mut buf, &mut got, "A4 OK")
+        .await
+        .unwrap();
+    assert!(got.contains("2 EXISTS"), "got: {got}");
+}

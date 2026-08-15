@@ -58,10 +58,11 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "talkd.local".to_string());
     let zsmtp_listener = zsmtp.to_tokio()?;
-    let sink = Arc::new(sink::StoreDeliverySink::new(store.clone()));
+
+    let imap = ImapServer::new(store.clone(), "talkd");
+    let sink = Arc::new(sink::StoreDeliverySink::new(store).with_events(imap.event_sender()));
     tokio::spawn(zsmpt_server::serve(zsmtp_domain, sink, zsmtp_listener));
 
-    let imap = ImapServer::new(store, "talkd");
     let imap_addr = cfg.sockets.imap_listen.clone();
     tokio::spawn(async move {
         if let Err(e) = imap.listen(&imap_addr).await {
