@@ -4,5 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+build = "build.rs"
 
 [dependencies]
+tokio = { workspace = true, features = ["net", "time", "rt", "macros"] }
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+thiserror = "2"
+tracing = { workspace = true }
+serde = { workspace = true }
+zcash_protocol = "0.10.4"
+zcash_client_backend = { version = "0.24.0-rc.7", features = ["lightwalletd-tonic", "sync", "orchard"] }
+zcash_client_sqlite = { version = "0.22.0-rc.8", features = ["orchard"] }
+zcash_keys = "0.16.1"
+
+[build-dependencies]
+tonic-prost-build = "0.14"

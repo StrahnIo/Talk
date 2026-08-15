@@ -29,7 +29,7 @@ base64 = "0.22"
 zeroize = { version = "1", features = ["derive"] }
 rand = "0.8"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
-rusqlite = { version = "0.40", features = ["bundled-sqlcipher"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [profile.release]
 lto = "thin"

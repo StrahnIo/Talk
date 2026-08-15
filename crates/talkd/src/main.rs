@@ -41,15 +41,10 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     let zsmtp = SocketListener::bind(&cfg.sockets.zsmtp)?;
     info!(path = %zsmtp.local_path().display(), "zsmtp.sock listening");
 
-    // Open the mailbox store (SQLCipher when encrypt_db is set).
+    // Open the mailbox store.
     let mailbox_db = cfg.general.data_dir.join("mailbox.db");
-    let passphrase = if cfg.mailbox.encrypt_db {
-        Some(cfg.mailbox.passphrase.as_str())
-    } else {
-        None
-    };
-    let store = SqliteMailStore::open(&mailbox_db, cfg.mailbox.encrypt_db, passphrase)?;
-    info!(path = %mailbox_db.display(), encrypted = cfg.mailbox.encrypt_db, "mailbox store open");
+    let store = SqliteMailStore::open(&mailbox_db)?;
+    info!(path = %mailbox_db.display(), "mailbox store open");
 
     let imap = ImapServer::new(Arc::new(store), "talkd");
     let imap_addr = cfg.sockets.imap_listen.clone();
