@@ -1,11 +1,32 @@
 //! Delivery sink: routes ZSMTP INVOICE deliveries into the mailbox store.
 
+use ed25519_dalek::SigningKey;
+use std::path::Path;
 use std::sync::Arc;
 use talk_imap::server::MailboxEvent;
 use talk_mailstore::{MessageFlags, NewMessage, SqliteMailStore};
 use talk_protocol::{DeliveryOutcome, DeliverySink, Payload};
 use tokio::sync::broadcast;
 use tracing::warn;
+
+/// Load the domain signing key from `data_dir/domainkey`, or create + persist
+/// it on first boot. The public half is what peers verify against (published
+/// in DNS in a future milestone).
+pub fn load_or_create_domain_key(data_dir: &Path) -> Result<SigningKey, std::io::Error> {
+    use ed25519_dalek::SecretKey;
+    let path = data_dir.join("domainkey");
+    if let Ok(raw) = std::fs::read(&path) {
+        let bytes: [u8; 32] = raw
+            .try_into()
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "bad domain key"))?;
+        let secret = SecretKey::from(bytes);
+        return Ok(SigningKey::from(&secret));
+    }
+    let key = SigningKey::generate(&mut rand::rngs::OsRng);
+    std::fs::create_dir_all(data_dir)?;
+    std::fs::write(&path, key.to_bytes())?;
+    Ok(key)
+}
 
 /// Delivers invoices into a user's mailbox, then notifies IDLE sessions.
 pub struct StoreDeliverySink {

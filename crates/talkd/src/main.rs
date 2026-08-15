@@ -59,9 +59,18 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
         .unwrap_or_else(|| "talkd.local".to_string());
     let zsmtp_listener = zsmtp.to_tokio()?;
 
+    // The stable domain signing key. Persisted so DNS-published attestations
+    // verify across restarts.
+    let domain_key = sink::load_or_create_domain_key(&cfg.general.data_dir)?;
+
     let imap = ImapServer::new(store.clone(), "talkd");
     let sink = Arc::new(sink::StoreDeliverySink::new(store).with_events(imap.event_sender()));
-    tokio::spawn(zsmpt_server::serve(zsmtp_domain, sink, zsmtp_listener));
+    tokio::spawn(zsmpt_server::serve(
+        zsmtp_domain,
+        domain_key,
+        sink,
+        zsmtp_listener,
+    ));
 
     let imap_addr = cfg.sockets.imap_listen.clone();
     tokio::spawn(async move {

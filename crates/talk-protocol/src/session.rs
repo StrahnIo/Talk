@@ -1,5 +1,6 @@
 //! ZSMTP server-side session: state machine over the command vocabulary.
 
+use crate::attestation::{Attestation, AttestationMode, mint_pair};
 use crate::codec::{AddrMode, Command};
 use crate::handshake::{Challenge, ChallengeResponse, DomainKey};
 use crate::status::{Status, StatusCode};
@@ -79,6 +80,23 @@ impl ZsmptSession {
         Self {
             state: SessionState::Greeting,
             domain_key: DomainKey::generate(&domain),
+            domain: domain.clone(),
+            peer_domain: None,
+            addr_user: None,
+            sink: None,
+        }
+    }
+
+    /// Build a session with a caller-supplied stable domain key (required for
+    /// attestations to be verifiable across sessions).
+    pub fn with_domain_key(domain: impl Into<String>, signing: ed25519_dalek::SigningKey) -> Self {
+        let domain = domain.into();
+        Self {
+            state: SessionState::Greeting,
+            domain_key: DomainKey {
+                domain: domain.clone(),
+                signing,
+            },
             domain: domain.clone(),
             peer_domain: None,
             addr_user: None,
@@ -219,18 +237,27 @@ impl ZsmptSession {
                 "ADDR requires a user",
             )));
         }
-        // v1: attestation of an ephemeral/attested address is a placeholder
-        // envelope. The actual shielded-address generation and domain-key
-        // signature over (address, pubkey) is wired up in M5b.
-        let mode = match mode {
-            AddrMode::Ephemeral => "ephemeral",
-            AddrMode::Attested => "attested",
-        };
         self.addr_user = Some(user.to_string());
-        let payload = format!("{mode}|{user}");
+
+        // v1: a placeholder (address, pubkey) pair, domain-key signed. Real
+        // shielded-address derivation swaps in without protocol change.
+        let att_mode = match mode {
+            AddrMode::Ephemeral => AttestationMode::Ephemeral,
+            AddrMode::Attested => AttestationMode::Attested,
+        };
+        let (address, pubkey) = mint_pair(att_mode);
+        let attestation = Attestation::sign(
+            &self.domain,
+            user,
+            att_mode,
+            address,
+            pubkey,
+            &self.domain_key.signing,
+        );
+        let payload = attestation.to_json().into_bytes();
         Ok(Reply::StatusWithBlob(
             Status::new(StatusCode::OK, "address attestation"),
-            payload.into_bytes(),
+            payload,
         ))
     }
 
@@ -437,21 +464,29 @@ mod tests {
     }
 
     #[test]
-    fn addr_returns_attestation_placeholder() {
+    fn addr_returns_signed_attestation() {
         let mut s = authenticated_session();
         let reply = s
             .handle(&Command::Addr {
                 mode: AddrMode::Ephemeral,
-                user: "alice@example.org".into(),
+                user: "alice".into(),
             })
             .unwrap();
         let Reply::StatusWithBlob(status, blob) = reply else {
             panic!("expected StatusWithBlob");
         };
         assert!(status.code.is_success());
-        assert_eq!(
-            String::from_utf8(blob).unwrap(),
-            "ephemeral|alice@example.org"
+        let att = crate::attestation::Attestation::from_json(&String::from_utf8(blob).unwrap())
+            .expect("attestation parses");
+        assert_eq!(att.domain, "receiver.example.org");
+        assert_eq!(att.user, "alice");
+        assert_eq!(att.mode, crate::attestation::AttestationMode::Ephemeral);
+        assert!(att.address.starts_with("taddr-"));
+        assert_eq!(att.pubkey.len(), 64, "32-byte hex pubkey");
+        // The attestation verifies against this session's stable domain key.
+        assert!(
+            att.verify(&s.domain_key.verifying(), "receiver.example.org")
+                .is_ok()
         );
     }
 
