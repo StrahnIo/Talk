@@ -1,5 +1,8 @@
 use clap::Parser;
+use std::sync::Arc;
 use talk_core::{config::Config, logging, sockets::SocketListener};
+use talk_imap::server::ImapServer;
+use talk_mailstore::SqliteMailStore;
 use tracing::{error, info};
 
 #[derive(Debug, Parser)]
@@ -38,10 +41,24 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     let zsmtp = SocketListener::bind(&cfg.sockets.zsmtp)?;
     info!(path = %zsmtp.local_path().display(), "zsmtp.sock listening");
 
-    let imap_listen = cfg.sockets.imap_listen.clone();
-    info!(addr = %imap_listen, "IMAP listener placeholder (M2)");
+    // Open the mailbox store (SQLCipher when encrypt_db is set).
+    let mailbox_db = cfg.general.data_dir.join("mailbox.db");
+    let passphrase = if cfg.mailbox.encrypt_db {
+        Some(cfg.mailbox.passphrase.as_str())
+    } else {
+        None
+    };
+    let store = SqliteMailStore::open(&mailbox_db, cfg.mailbox.encrypt_db, passphrase)?;
+    info!(path = %mailbox_db.display(), encrypted = cfg.mailbox.encrypt_db, "mailbox store open");
 
-    // TODO(M2): bind the IMAP TCP listener.
+    let imap = ImapServer::new(Arc::new(store), "talkd");
+    let imap_addr = cfg.sockets.imap_listen.clone();
+    tokio::spawn(async move {
+        if let Err(e) = imap.listen(&imap_addr).await {
+            error!(error = %e, "IMAP listener failed");
+        }
+    });
+
     // TODO(M3): connect to lightwalletd indexer, spawn per-user wallet scan loops.
 
     let (ctrlc_tx, mut ctrlc_rx) = tokio::sync::mpsc::channel::<()>(1);

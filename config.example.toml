@@ -8,7 +8,7 @@ indexer_url = "lwd.example.com:9067"
 [sockets]
 secure_mailbox = "/run/talk/secure_mailbox.sock"
 zsmtp = "/run/talk/zsmtp.sock"
-imap_listen = "127.0.0.1:993"
+imap_listen = "127.0.0.1:1143"
 
 [tls]
 cert = "/etc/talk/cert.pem"
@@ -16,4 +16,5 @@ key = "/etc/talk/key.pem"
 
 [mailbox]
 encrypt_db = true
+passphrase = "CHANGE-ME"
 wallet_dir = "/var/lib/talk/wallets"

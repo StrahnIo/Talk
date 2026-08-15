@@ -49,6 +49,8 @@ pub struct Tls {
 pub struct Mailbox {
     #[serde(default = "default_true")]
     pub encrypt_db: bool,
+    #[serde(default)]
+    pub passphrase: String,
     pub wallet_dir: PathBuf,
 }
 
