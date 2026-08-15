@@ -6,3 +6,16 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+tokio = { workspace = true, features = ["io-util", "time"] }
+serde = { workspace = true }
+serde_json = "1"
+thiserror = "2"
+tracing = { workspace = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = { workspace = true }
+zeroize = { workspace = true }
+sha2 = "0.10"
+base64 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
