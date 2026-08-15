@@ -2613,6 +2613,7 @@ dependencies = [
  "talk-core",
  "talk-imap",
  "talk-mailstore",
+ "talk-wallet",
  "tokio",
  "toml",
  "tracing",

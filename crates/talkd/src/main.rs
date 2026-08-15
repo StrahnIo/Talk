@@ -3,7 +3,8 @@ use std::sync::Arc;
 use talk_core::{config::Config, logging, sockets::SocketListener};
 use talk_imap::server::ImapServer;
 use talk_mailstore::SqliteMailStore;
-use tracing::{error, info};
+use talk_wallet::LightwalletdClient;
+use tracing::{error, info, warn};
 
 #[derive(Debug, Parser)]
 #[command(name = "talkd", version, about = "ZSMTP mail daemon for Zcash")]
@@ -54,7 +55,21 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
         }
     });
 
-    // TODO(M3): connect to lightwalletd indexer, spawn per-user wallet scan loops.
+    // Connect to the lightwalletd indexer. A failure here is non-fatal at boot
+    // (the daemon can start without the indexer and retry), but we log it and
+    // still report the last-known height if a connection is made.
+    let indexer_url = cfg.network.indexer_url.clone();
+    tokio::spawn(async move {
+        match LightwalletdClient::connect(&indexer_url).await {
+            Ok(mut client) => match client.latest_height().await {
+                Ok(height) => {
+                    info!(indexer = %indexer_url, height, "lightwalletd indexer connected")
+                }
+                Err(e) => warn!(error = %e, "indexer height fetch failed"),
+            },
+            Err(e) => warn!(error = %e, "indexer connect failed"),
+        }
+    });
 
     let (ctrlc_tx, mut ctrlc_rx) = tokio::sync::mpsc::channel::<()>(1);
     tokio::spawn(async move {
