@@ -143,7 +143,7 @@ impl ZsmptSession {
         &mut self,
         stream: &mut S,
     ) -> Result<(), crate::framing::FramingError> {
-        use crate::framing::{read_line, write_line};
+        use crate::framing::{read_blob, read_line, write_line};
         use tokio::io::BufReader;
         let mut stream = BufReader::new(stream);
         write_line(&mut stream, &self.greeting()).await?;
@@ -153,7 +153,7 @@ impl ZsmptSession {
                 Err(crate::framing::FramingError::Protocol(_)) => return Ok(()),
                 Err(e) => return Err(e),
             };
-            let cmd = match crate::codec::decode_line(&line) {
+            let mut cmd = match crate::codec::decode_line(&line) {
                 Ok(c) => c,
                 Err(_) => {
                     write_line(
@@ -164,6 +164,13 @@ impl ZsmptSession {
                     continue;
                 }
             };
+            // INVOICE carries a length-prefixed blob payload.
+            if matches!(cmd, Command::Invoice { .. }) {
+                let body = read_blob(&mut stream).await?;
+                if let Command::Invoice { body: slot, .. } = &mut cmd {
+                    *slot = body;
+                }
+            }
             let is_quit = matches!(cmd, Command::Quit);
             match self.handle(&cmd) {
                 Ok(reply) => write_reply(&mut stream, &reply).await?,
@@ -554,9 +561,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn invoice_delivers_to_sink() {
         use std::sync::Mutex;
-        struct Sink(Mutex<Vec<(String, String, String)>>);
+        struct Sink(Mutex<Vec<(String, String, String, Vec<u8>)>>);
         impl DeliverySink for Sink {
             fn deliver(
                 &self,
@@ -564,12 +572,13 @@ mod tests {
                 message_id: &str,
                 mailbox: &str,
                 _payload: crate::envelope::Payload,
-                _body: &[u8],
+                body: &[u8],
             ) -> DeliveryOutcome {
                 self.0.lock().unwrap().push((
                     sender.to_string(),
                     message_id.to_string(),
                     mailbox.to_string(),
+                    body.to_vec(),
                 ));
                 DeliveryOutcome::Accepted {
                     message_id: message_id.to_string(),
@@ -596,6 +605,7 @@ mod tests {
         assert_eq!(calls[0].0, "sender.example.com");
         assert_eq!(calls[0].1, "m42");
         assert_eq!(calls[0].2, "alice@receiver.example.org");
+        assert_eq!(calls[0].3, b"blob");
     }
 
     #[test]
@@ -740,7 +750,7 @@ mod tests {
     }
 
     /// Read until a CRLF-terminated line arrives, returning it.
-    async fn read_some(client: &mut tokio::io::DuplexStream, buf: &mut [u8]) -> String {
+    async fn read_some<R: tokio::io::AsyncRead + Unpin>(client: &mut R, buf: &mut [u8]) -> String {
         use tokio::io::AsyncReadExt;
         let mut acc = String::new();
         loop {
@@ -754,6 +764,82 @@ mod tests {
             }
         }
         acc
+    }
+
+    #[tokio::test]
+    async fn invoice_blob_delivered_over_stream() {
+        use crate::framing::{read_blob, read_line, write_blob, write_line};
+        use std::sync::Mutex;
+
+        struct Sink(Mutex<Vec<u8>>);
+        impl DeliverySink for Sink {
+            fn deliver(
+                &self,
+                _s: &str,
+                _m: &str,
+                _b: &str,
+                _p: crate::envelope::Payload,
+                body: &[u8],
+            ) -> DeliveryOutcome {
+                *self.0.lock().unwrap() = body.to_vec();
+                DeliveryOutcome::Accepted {
+                    message_id: "m42".into(),
+                }
+            }
+        }
+
+        let sink = Arc::new(Sink(Mutex::new(Vec::new())));
+        let (client, server_stream) = tokio::io::duplex(8192);
+        let mut session = ZsmptSession::new("receiver.example.org").with_sink(sink.clone());
+        let mut server_stream = server_stream;
+        let handle = tokio::spawn(async move {
+            let _ = session.run(&mut server_stream).await;
+        });
+
+        let mut client = tokio::io::BufReader::new(client);
+
+        let line = read_line(&mut client).await.unwrap(); // greeting
+        assert_eq!(line, "ZSMTP 1.0 receiver.example.org");
+
+        write_line(&mut client, "HELLO sender.example.com")
+            .await
+            .unwrap();
+        let line = read_line(&mut client).await.unwrap();
+        assert!(line.starts_with("250 Hello"), "got: {line}");
+
+        let challenge =
+            crate::handshake::Challenge::issue("sender.example.com", "receiver.example.org");
+        let auth_line = {
+            use base64::Engine;
+            let b64 =
+                base64::engine::general_purpose::STANDARD.encode(challenge.to_wire().as_bytes());
+            format!("AUTH {b64}")
+        };
+        write_line(&mut client, &auth_line).await.unwrap();
+        let line = read_line(&mut client).await.unwrap();
+        assert!(line.starts_with("250 authenticated"), "got: {line}");
+        let blob = read_blob(&mut client).await.unwrap();
+        assert!(!blob.is_empty()); // signed challenge
+
+        write_line(&mut client, "ADDR ephemeral alice")
+            .await
+            .unwrap();
+        let line = read_line(&mut client).await.unwrap();
+        assert!(line.starts_with("250 address attestation"), "got: {line}");
+        let blob = read_blob(&mut client).await.unwrap();
+        assert!(!blob.is_empty()); // attestation JSON
+
+        write_line(&mut client, "INVOICE m42 sealed").await.unwrap();
+        write_blob(&mut client, b"opaque-body").await.unwrap();
+        let line = read_line(&mut client).await.unwrap();
+        assert!(line.starts_with("250 accepted into inbox"), "got: {line}");
+
+        assert_eq!(*sink.0.lock().unwrap(), b"opaque-body");
+
+        write_line(&mut client, "QUIT").await.unwrap();
+        let line = read_line(&mut client).await.unwrap();
+        assert!(line.starts_with("221"), "got: {line}");
+        handle.abort();
     }
 
     fn authenticated_session() -> ZsmptSession {
