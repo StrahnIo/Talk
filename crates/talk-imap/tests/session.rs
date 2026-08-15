@@ -72,12 +72,69 @@ fn login_rejected_for_unknown_user() {
 }
 
 #[test]
-fn app_password_username_suffix_authenticates() {
+fn app_password_share_unlocks_dk() {
+    use talk_keys::{DataKey, PerShareWrapper, Share, ShareScheme};
+
     let (_dir, store, _) = setup();
-    let mut s = session_with(store);
-    let out = s.handle(&parse_cmd("A1 LOGIN alice:app some-share"));
-    assert!(out.contains("A1 OK"));
+    let alice = store.get_user("alice").expect("get").expect("exists");
+
+    // Wrap a data key under a share and register the wrapper for alice.
+    let mut rng = rand::thread_rng();
+    let dk = DataKey::generate(&mut rng);
+    let share = Share::generate(&mut rng);
+    let scheme = PerShareWrapper;
+    let set = scheme.wrap(&dk, std::slice::from_ref(&share));
+    store
+        .add_share(alice.id, "share-1", &set.wrappers[0].wrapped)
+        .expect("add share");
+
+    // Login with the share as the app password (hex).
+    let share_hex = share
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let mut s = session_with(Arc::clone(&store));
+    let out = s.handle(&parse_cmd(&format!("A1 LOGIN alice:app {share_hex}")));
+    assert!(out.contains("A1 OK"), "got: {out}");
     assert_eq!(s.username, "alice");
+}
+
+#[test]
+fn app_password_wrong_share_rejected() {
+    use talk_keys::{DataKey, PerShareWrapper, Share, ShareScheme};
+
+    let (_dir, store, _) = setup();
+    let alice = store.get_user("alice").expect("get").expect("exists");
+
+    let mut rng = rand::thread_rng();
+    let dk = DataKey::generate(&mut rng);
+    let share = Share::generate(&mut rng);
+    let scheme = PerShareWrapper;
+    let set = scheme.wrap(&dk, std::slice::from_ref(&share));
+    store
+        .add_share(alice.id, "share-1", &set.wrappers[0].wrapped)
+        .expect("add share");
+
+    // A different share must not authenticate.
+    let wrong = Share::generate(&mut rng);
+    let wrong_hex = wrong
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let mut s = session_with(Arc::clone(&store));
+    let out = s.handle(&parse_cmd(&format!("A1 LOGIN alice:app {wrong_hex}")));
+    assert!(out.contains("A1 NO"), "got: {out}");
+    assert_eq!(s.state, State::NotAuthenticated);
+}
+
+#[test]
+fn app_password_non_hex_rejected() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(Arc::clone(&store));
+    let out = s.handle(&parse_cmd("A1 LOGIN alice:app not-hex!!"));
+    assert!(out.contains("A1 NO"));
 }
 
 #[test]

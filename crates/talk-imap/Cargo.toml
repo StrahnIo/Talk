@@ -11,9 +11,12 @@ base64 = { workspace = true }
 time = { workspace = true }
 thiserror = "2"
 tracing = { workspace = true }
+hex = "0.4"
 talk-mailstore = { path = "../talk-mailstore" }
 talk-keys = { path = "../talk-keys" }
 
 [dev-dependencies]
 talk-mailstore = { path = "../talk-mailstore" }
+talk-keys = { path = "../talk-keys" }
 tempfile = "3"
+rand = { workspace = true }

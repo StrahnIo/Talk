@@ -11,5 +11,5 @@ pub mod resolver;
 pub mod share;
 
 pub use dk::DataKey;
-pub use resolver::{KeyResolver, MasterKeyResolver, ShareResolver, WrappedByMaster};
-pub use share::{PerShareWrapper, Share, ShareScheme, WrappedDkSet};
+pub use resolver::{Credential, KeyResolver, MasterKeyResolver, ShareResolver, WrappedByMaster};
+pub use share::{PerShareWrapper, Share, ShareError, ShareScheme, WrappedByShare, WrappedDkSet};

@@ -3,6 +3,7 @@
 use crate::parse::ParsedCommand;
 use crate::response::{self, Status};
 use std::sync::Arc;
+use talk_keys::KeyResolver;
 use talk_mailstore::{MessageFlags, SqliteMailStore, StoreError};
 use tracing::debug;
 
@@ -96,17 +97,63 @@ impl Session {
     }
 
     fn login(&mut self, tag: &str, username: &str, password: &str) -> String {
-        // An ":app" username suffix marks an app-password login. For v1 the
-        // share itself is not yet validated against the DK wrapper ladder; the
-        // hook lives in the server wiring. Both paths must authenticate the
-        // username against the store.
-        let base = match username.strip_suffix(":app") {
-            Some(b) => b.to_string(),
-            None => username.to_string(),
+        // An ":app" username suffix marks an app-password login: the password
+        // is a share, and the session only authenticates if that share unwraps
+        // the user's data key (see the DK wrapper ladder in `talk-keys`).
+        let (base, is_app) = match username.strip_suffix(":app") {
+            Some(b) => (b.to_string(), true),
+            None => (username.to_string(), false),
         };
         let Some(user) = self.store.get_user(&base).ok().flatten() else {
             return response::tagged(tag, Status::No, "Authentication failed");
         };
+        if is_app {
+            let share = match hex::decode(password) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    talk_keys::Share::from_bytes(arr)
+                }
+                _ => return response::tagged(tag, Status::No, "Authentication failed"),
+            };
+            let wrappers = match self.store.get_shares(user.id) {
+                Ok(w) => w,
+                Err(_) => return response::tagged(tag, Status::No, "Authentication failed"),
+            };
+            let wrapped: Vec<talk_keys::WrappedByShare> = wrappers
+                .into_iter()
+                .map(|(share_id, wrapped)| {
+                    let mut id = [0u8; 16];
+                    let _ = share_id;
+                    // share_id on the wire is hex of 16 bytes; fall back to
+                    // zeros if malformed (the wrapped bytes still authenticate).
+                    if let Ok(b) = hex::decode(&share_id)
+                        && b.len() == 16
+                    {
+                        id.copy_from_slice(&b);
+                    }
+                    talk_keys::WrappedByShare {
+                        share_id: id,
+                        wrapped,
+                    }
+                })
+                .collect();
+            let scheme = talk_keys::PerShareWrapper;
+            let set = talk_keys::WrappedDkSet { wrappers: wrapped };
+            let resolver = talk_keys::ShareResolver::new(&scheme, &set);
+            if resolver
+                .unwrap(&talk_keys::Credential::Share(share))
+                .is_ok()
+            {
+                self.user_id = user.id;
+                self.username = user.username.clone();
+                self.state = State::Authenticated;
+                return response::tagged(tag, Status::Ok, "LOGIN completed (app password)");
+            }
+            return response::tagged(tag, Status::No, "Authentication failed");
+        }
+        // Standard login: v1 accepts any non-empty password as a placeholder
+        // until password hashing is implemented.
         if password.is_empty() {
             return response::tagged(tag, Status::No, "Authentication failed");
         }

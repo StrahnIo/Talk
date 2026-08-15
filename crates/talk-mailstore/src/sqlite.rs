@@ -231,6 +231,22 @@ impl SqliteMailStore {
         Ok(rows)
     }
 
+    /// Register a DK wrapper for a user (app-password share).
+    pub fn add_share(
+        &self,
+        user_id: i64,
+        share_id: &str,
+        wrapped_dk: &[u8],
+    ) -> Result<(), StoreError> {
+        let guard = self.lock()?;
+        guard.execute(
+            "INSERT INTO shares (user_id, share_id, wrapped_dk, revoked)
+             VALUES (?1, ?2, ?3, 0)",
+            params![user_id, share_id, wrapped_dk],
+        )?;
+        Ok(())
+    }
+
     /// Fetch a full message (including body) by message row id.
     pub fn fetch_message(&self, user_id: i64, message_id: i64) -> Result<Message, StoreError> {
         let (mailbox_id, uidvalidity, _) = self.mailbox_row(user_id)?;
