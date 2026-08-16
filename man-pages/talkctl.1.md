@@ -150,7 +150,9 @@ talkctl [OPTIONS] user unset-ivk <USER>
     N` (default `0`) is given, a fresh data key is generated, wrapped under `N`
     new shares, and each share's secret is printed to stdout exactly once.
     Fails if the username exists, if the pubkey/IVK is not 32 bytes of hex, or
-    if the domain key is missing.
+    if the domain key is missing. `<USER>` must be a **bare local name**: no
+    `@` (use `user@<domain>` only to *look up* an existing user) and no `:`
+    (reserved for the `:app` app-password suffix).
 
 `delete <USER>`
 :   Delete a user and all associated data — mailbox, messages, shares, keyring
@@ -330,6 +332,14 @@ TLS, using the config `send_endpoint` as a fallback override when SRV fails.
 :   X25519 master key files written by `key generate` (raw 32 bytes each; the
     private key is mode `0600`). `key` commands are purely local crypto and do
     not require `--config`.
+
+## USERNAMES AND DOMAINS
+
+Usernames are **local parts** (`alice`). IMAP login and `talkctl` user
+commands also accept the qualified form `alice@<domain>`, where `<domain>` is
+the daemon's configured `[general] domain` (`talk.local` in the examples); the
+domain is stripped and the local user is resolved. Any other domain
+(`alice@evil.org`) is rejected. `user create` only accepts a bare local name.
 
 ## EXIT STATUS
 

@@ -182,6 +182,7 @@ pub fn user_run(config_path: Option<&Path>, action: UserAction) -> Result<(), Ct
             if username.is_empty() || password.is_empty() {
                 return Err(CtlError::msg("username and password are required"));
             }
+            validate_username(&username)?;
             let hash = talk_mailstore::hash_password(&password)
                 .map_err(|e| CtlError::msg(format!("password hash failed: {e}")))?;
             let domain_key = ctx.domain_key()?;
@@ -329,9 +330,32 @@ pub fn keyring_run(config_path: Option<&Path>, action: KeyringAction) -> Result<
 // ---------------------------------------------------------------------------
 
 fn require_user(ctx: &Ctx, username: &str) -> Result<talk_mailstore::User, CtlError> {
+    // Uniform domain support: accept a bare local part or `user@<domain>`.
+    let Some(local) = talk_mailstore::local_username(username, &ctx.cfg.general.domain) else {
+        return Err(CtlError::msg(format!("no such user: {username}")));
+    };
     ctx.store
-        .get_user(username)?
+        .get_user(local)?
         .ok_or_else(|| CtlError::msg(format!("no such user: {username}")))
+}
+
+/// A bare local username: no `@` (domain) and no `:` (reserved for the
+/// `:app` app-password suffix).
+fn validate_username(username: &str) -> Result<(), CtlError> {
+    if username.is_empty() {
+        return Err(CtlError::msg("username is required"));
+    }
+    if username.contains('@') {
+        return Err(CtlError::msg(
+            "username must be a bare local name (no @domain)",
+        ));
+    }
+    if username.contains(':') {
+        return Err(CtlError::msg(
+            "username must not contain ':' (reserved for app passwords)",
+        ));
+    }
+    Ok(())
 }
 
 fn prompt_password(prompt: &str) -> String {

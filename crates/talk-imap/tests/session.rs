@@ -32,6 +32,7 @@ fn session_with(store: Arc<SqliteMailStore>) -> Session {
         user_id: 0,
         store,
         auth_mode: talk_imap::AuthMode::Database,
+        domain: "talk.local".to_string(),
     }
 }
 
@@ -73,6 +74,34 @@ fn login_rejected_for_unknown_user() {
 }
 
 #[test]
+fn login_with_local_domain_accepted() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    let out = s.handle(&parse_cmd("A1 LOGIN alice@talk.local secret"));
+    assert!(out.contains("A1 OK"), "got: {out}");
+    assert_eq!(s.state, State::Authenticated);
+    assert_eq!(s.username, "alice");
+}
+
+#[test]
+fn login_with_foreign_domain_rejected() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    let out = s.handle(&parse_cmd("A1 LOGIN alice@evil.org secret"));
+    assert!(out.contains("A1 NO"), "got: {out}");
+    assert_eq!(s.state, State::NotAuthenticated);
+}
+
+#[test]
+fn login_with_wrong_password_and_domain_rejected() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    let out = s.handle(&parse_cmd("A1 LOGIN alice@talk.local wrongpass"));
+    assert!(out.contains("A1 NO"), "got: {out}");
+    assert_eq!(s.state, State::NotAuthenticated);
+}
+
+#[test]
 fn app_password_share_unlocks_dk() {
     use talk_keys::{DataKey, PerShareWrapper, Share, ShareScheme};
 
@@ -97,6 +126,35 @@ fn app_password_share_unlocks_dk() {
         .collect::<String>();
     let mut s = session_with(Arc::clone(&store));
     let out = s.handle(&parse_cmd(&format!("A1 LOGIN alice:app {share_hex}")));
+    assert!(out.contains("A1 OK"), "got: {out}");
+    assert_eq!(s.username, "alice");
+}
+
+#[test]
+fn app_password_with_local_domain_accepted() {
+    use talk_keys::{DataKey, PerShareWrapper, Share, ShareScheme};
+
+    let (_dir, store, _) = setup();
+    let alice = store.get_user("alice").expect("get").expect("exists");
+
+    let mut rng = rand::thread_rng();
+    let dk = DataKey::generate(&mut rng);
+    let share = Share::generate(&mut rng);
+    let scheme = PerShareWrapper;
+    let set = scheme.wrap(&dk, std::slice::from_ref(&share));
+    store
+        .add_share(alice.id, "share-1", &set.wrappers[0].wrapped)
+        .expect("add share");
+
+    let share_hex = share
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let mut s = session_with(Arc::clone(&store));
+    let out = s.handle(&parse_cmd(&format!(
+        "A1 LOGIN alice@talk.local:app {share_hex}"
+    )));
     assert!(out.contains("A1 OK"), "got: {out}");
     assert_eq!(s.username, "alice");
 }
@@ -157,6 +215,106 @@ fn fetch_returns_body_literal() {
     assert!(out.contains("* 1 FETCH (FLAGS () UID 1 RFC822.SIZE 15 BODY[] {15}"));
     assert!(out.contains("ciphertext-blob"));
     assert!(out.contains("A3 OK FETCH completed"));
+}
+
+#[test]
+fn fetch_header_section_synthesizes_headers() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+
+    let out = s.handle(&parse_cmd("A3 FETCH 1 (BODY.PEEK[HEADER])"));
+    assert!(out.contains("BODY[HEADER] {"), "got: {out}");
+    assert!(out.contains("Subject: New sealed invoice"), "got: {out}");
+    assert!(out.contains("Message-ID: <msg-1>"), "got: {out}");
+    assert!(out.contains("A3 OK FETCH completed"));
+}
+
+#[test]
+fn fetch_header_fields_only_returns_listed() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+
+    let out = s.handle(&parse_cmd(
+        "A3 FETCH 1 (BODY.PEEK[HEADER.FIELDS (SUBJECT)])",
+    ));
+    assert!(
+        out.contains("BODY[HEADER.FIELDS (SUBJECT)] {"),
+        "got: {out}"
+    );
+    assert!(out.contains("Subject: New sealed invoice"), "got: {out}");
+    assert!(!out.contains("Message-ID"), "only listed fields: {out}");
+    assert!(out.contains("A3 OK FETCH completed"));
+}
+
+#[test]
+fn fetch_text_section_returns_body() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+
+    let out = s.handle(&parse_cmd("A3 FETCH 1 (BODY.PEEK[TEXT])"));
+    assert!(out.contains("BODY[TEXT] {15}"), "got: {out}");
+    assert!(out.contains("ciphertext-blob"), "got: {out}");
+    assert!(
+        !out.contains("Subject:"),
+        "text must not include headers: {out}"
+    );
+}
+
+#[test]
+fn fetch_macros_full_fast_all() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+
+    let full = s.handle(&parse_cmd("A3 FETCH 1 (FULL)"));
+    assert!(full.contains("FLAGS ()"), "got: {full}");
+    assert!(full.contains("RFC822.SIZE 15"), "got: {full}");
+    assert!(full.contains("INTERNALDATE"), "got: {full}");
+    assert!(full.contains("ENVELOPE ("), "got: {full}");
+    assert!(full.contains("BODY[] {15}"), "got: {full}");
+
+    let fast = s.handle(&parse_cmd("A4 FETCH 1 (FAST)"));
+    assert!(fast.contains("FLAGS ()"), "got: {fast}");
+    assert!(fast.contains("RFC822.SIZE 15"), "got: {fast}");
+    assert!(!fast.contains("BODY["), "FAST must not fetch body: {fast}");
+
+    let all = s.handle(&parse_cmd("A5 FETCH 1 (ALL)"));
+    assert!(all.contains("ENVELOPE ("), "got: {all}");
+    assert!(all.contains("BODY[] {15}"), "got: {all}");
+}
+
+#[test]
+fn fetch_rfc822_size_never_zero_without_body() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+
+    // RFC822.SIZE must come from the stored metadata even when the body is
+    // not read (it used to report 0).
+    let out = s.handle(&parse_cmd("A3 FETCH 1 (FLAGS RFC822.SIZE)"));
+    assert!(out.contains("RFC822.SIZE 15"), "got: {out}");
+    assert!(!out.contains("BODY["), "got: {out}");
+}
+
+#[test]
+fn status_includes_recent() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd(
+        "A2 STATUS INBOX (MESSAGES RECENT UNSEEN UIDNEXT UIDVALIDITY)",
+    ));
+    assert!(out.contains("MESSAGES 1"), "got: {out}");
+    assert!(out.contains("RECENT 0"), "got: {out}");
+    assert!(out.contains("A2 OK STATUS completed"));
 }
 
 #[test]

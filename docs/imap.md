@@ -37,6 +37,18 @@ client) to prove real-client compatibility.
 `MOVE`, `COPY`, `APPEND`, `CREATE`/`DELETE`/`RENAME`, `NOTIFY`, `LITERAL+`,
 `CONDSTORE`/`QRESYNC`, `UID EXPUNGE`, quotas/ACLs, multi-mailbox search.
 
+### FETCH body sections
+
+Body fetches honor their section (important for Thunderbird and other clients
+that build the message list from `BODY[HEADER]`): `BODY[]`/`BODY.PEEK[]`
+(full stored body), `BODY[HEADER]`, `BODY[TEXT]`, `BODY[MIME]`, and
+`BODY[HEADER.FIELDS (...)]` / `BODY[HEADER.FIELDS.NOT (...)]`. Because the
+store keeps opaque bodies, `BODY[HEADER]` is **synthesized** from the stored
+metadata (`Date`, `From`, `Subject`, `Message-ID`); `BODY[TEXT]` and `BODY[]`
+return the stored blob. The `ALL` / `FULL` / `FAST` macros are supported.
+`RFC822.SIZE` always reflects the stored message size, even when the body is
+not fetched.
+
 ## Framing and session model
 
 - Commands: CRLF-terminated lines with `{n}` literal support (required for

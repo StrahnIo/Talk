@@ -9,7 +9,6 @@ pub mod sqlite;
 
 pub use password::{hash_password, verify_password};
 pub use sqlite::SqliteMailStore;
-
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// A user's immutable identity within the mailbox.
@@ -156,6 +155,32 @@ pub(crate) fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
+/// Resolve a login username against the daemon's local domain.
+///
+/// A bare local part (`alice`) is always accepted. A qualified form
+/// (`alice@<local_domain>`, case-insensitive on the domain) resolves to the
+/// local part. Any other domain is rejected (`None`), so a foreign
+/// `alice@elsewhere` cannot alias a local user.
+pub fn local_username<'a>(login: &'a str, local_domain: &str) -> Option<&'a str> {
+    let login = login.trim();
+    if login.is_empty() {
+        return None;
+    }
+    match login.split_once('@') {
+        None => Some(login),
+        Some((local, domain)) => {
+            if local.is_empty() {
+                return None;
+            }
+            if domain.eq_ignore_ascii_case(local_domain) {
+                Some(local)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// Error type for mailbox storage operations.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -175,4 +200,40 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error("internal lock poisoned")]
     Poisoned,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::local_username;
+
+    #[test]
+    fn bare_username_always_ok() {
+        assert_eq!(local_username("alice", "talk.local"), Some("alice"));
+        assert_eq!(local_username(" alice ", "talk.local"), Some("alice"));
+    }
+
+    #[test]
+    fn matching_domain_resolves_to_local_part() {
+        assert_eq!(
+            local_username("alice@talk.local", "talk.local"),
+            Some("alice")
+        );
+        // Domain match is case-insensitive.
+        assert_eq!(
+            local_username("alice@TALK.LOCAL", "talk.local"),
+            Some("alice")
+        );
+    }
+
+    #[test]
+    fn foreign_domain_rejected() {
+        assert_eq!(local_username("alice@evil.org", "talk.local"), None);
+        assert_eq!(local_username("alice@", "talk.local"), None);
+    }
+
+    #[test]
+    fn empty_rejected() {
+        assert_eq!(local_username("", "talk.local"), None);
+        assert_eq!(local_username("  ", "talk.local"), None);
+    }
 }
