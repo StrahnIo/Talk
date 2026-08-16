@@ -12,4 +12,4 @@ pub mod rpc {
 }
 
 pub use client::{LightwalletdClient, WalletError};
-pub use wallet::UserWallet;
+pub use wallet::{UserWallet, WalletBinding, WalletResolver};
