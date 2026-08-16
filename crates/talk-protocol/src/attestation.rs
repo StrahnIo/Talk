@@ -125,6 +125,40 @@ impl Attestation {
     }
 }
 
+/// A minted address: the payment address and its associated encryption pubkey.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MintedAddress {
+    /// The (placeholder or shielded) payment address.
+    pub address: String,
+    /// The public encryption key for this address (hex).
+    pub pubkey: String,
+    /// The diversifier `d` (dynamic mode only). `None` in static mode.
+    pub diversifier: Option<String>,
+}
+
+/// Mints payment addresses for attestation. Isolates any IVK so the main
+/// daemon never touches it; a future `IvkAddressProvider` can run on its own
+/// socket/TCP port behind a thin client impl.
+pub trait AddressProvider: Send + Sync {
+    fn mint(&self, mode: AttestationMode) -> MintedAddress;
+}
+
+/// v1 provider: mints a random placeholder `(address, pubkey)` pair. Real
+/// shielded-address derivation (and optional IVK dynamic addresses) replaces
+/// this without protocol change.
+pub struct PlaceholderAddressProvider;
+
+impl AddressProvider for PlaceholderAddressProvider {
+    fn mint(&self, mode: AttestationMode) -> MintedAddress {
+        let (address, pubkey) = mint_pair(mode);
+        MintedAddress {
+            address,
+            pubkey,
+            diversifier: None,
+        }
+    }
+}
+
 /// A placeholder address keypair: generates a random pubkey on demand.
 ///
 /// Ephemeral mode mints a fresh pubkey per request; attested mode returns a

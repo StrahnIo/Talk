@@ -1,6 +1,6 @@
 //! ZSMTP server-side session: state machine over the command vocabulary.
 
-use crate::attestation::{Attestation, AttestationMode, mint_pair};
+use crate::attestation::{Attestation, AttestationMode};
 use crate::codec::{AddrMode, Command};
 use crate::handshake::{Challenge, ChallengeResponse, DomainKey};
 use crate::status::{Status, StatusCode};
@@ -82,6 +82,8 @@ pub struct ZsmptSession {
     sink: Option<Arc<dyn DeliverySink>>,
     /// Registered-user directory (for resolving ADDR/INVOICE recipients).
     directory: Option<Arc<dyn UserDirectory>>,
+    /// Mints addresses for attestation (isolates any IVK).
+    address_provider: Arc<dyn crate::attestation::AddressProvider>,
 }
 
 impl ZsmptSession {
@@ -95,6 +97,7 @@ impl ZsmptSession {
             addr_user: None,
             sink: None,
             directory: None,
+            address_provider: Arc::new(crate::attestation::PlaceholderAddressProvider),
         }
     }
 
@@ -113,6 +116,7 @@ impl ZsmptSession {
             addr_user: None,
             sink: None,
             directory: None,
+            address_provider: Arc::new(crate::attestation::PlaceholderAddressProvider),
         }
     }
 
@@ -127,6 +131,16 @@ impl ZsmptSession {
     /// username (used by standalone tests).
     pub fn with_directory(mut self, directory: Arc<dyn UserDirectory>) -> Self {
         self.directory = Some(directory);
+        self
+    }
+
+    /// Attach an address provider (isolates any IVK). Defaults to the
+    /// placeholder provider.
+    pub fn with_address_provider(
+        mut self,
+        provider: Arc<dyn crate::attestation::AddressProvider>,
+    ) -> Self {
+        self.address_provider = provider;
         self
     }
 
@@ -275,19 +289,19 @@ impl ZsmptSession {
         }
         self.addr_user = Some(user.to_string());
 
-        // v1: a placeholder (address, pubkey) pair, domain-key signed. Real
-        // shielded-address derivation swaps in without protocol change.
+        // Mint via the address provider (isolates any IVK). The encryption
+        // pubkey is anchored to the registration (R) in the daemon's impl.
         let att_mode = match mode {
             AddrMode::Ephemeral => AttestationMode::Ephemeral,
             AddrMode::Attested => AttestationMode::Attested,
         };
-        let (address, pubkey) = mint_pair(att_mode);
+        let minted = self.address_provider.mint(att_mode);
         let attestation = Attestation::sign(
             &self.domain,
             user,
             att_mode,
-            address,
-            pubkey,
+            minted.address,
+            minted.pubkey,
             &self.domain_key.signing,
         );
         let payload = attestation.to_json().into_bytes();

@@ -214,3 +214,54 @@ async fn connect_unix_round_trip() {
         .expect("invoice");
     c.quit().await.expect("quit");
 }
+
+#[tokio::test]
+async fn custom_address_provider_used_by_session() {
+    use talk_protocol::attestation::{
+        AddressProvider, Attestation as Att, AttestationMode, MintedAddress,
+    };
+    use talk_protocol::codec::AddrMode;
+    use talk_protocol::codec::Command;
+    use talk_protocol::handshake::Challenge;
+    use talk_protocol::session::{Reply, SessionState, ZsmptSession};
+
+    struct FixedProvider;
+    impl AddressProvider for FixedProvider {
+        fn mint(&self, _mode: AttestationMode) -> MintedAddress {
+            MintedAddress {
+                address: "taddr-fixed".into(),
+                pubkey: "f00d".into(),
+                diversifier: None,
+            }
+        }
+    }
+
+    let mut s = ZsmptSession::new("receiver.example.org")
+        .with_address_provider(std::sync::Arc::new(FixedProvider));
+    s.handle(&Command::Hello {
+        domain: "sender.example.com".into(),
+    })
+    .unwrap();
+    let challenge = Challenge::issue("sender.example.com", "receiver.example.org");
+    s.handle(&Command::Auth {
+        challenge: challenge.to_wire().into_bytes(),
+    })
+    .unwrap();
+    assert_eq!(s.state, SessionState::Authenticated);
+
+    let reply = s
+        .handle(&Command::Addr {
+            mode: AddrMode::Ephemeral,
+            user: "alice".into(),
+        })
+        .unwrap();
+    let Reply::StatusWithBlob(_, blob) = reply else {
+        panic!("expected StatusWithBlob");
+    };
+    let att = Att::from_json(&String::from_utf8(blob).unwrap()).expect("parse");
+    assert_eq!(
+        att.address, "taddr-fixed",
+        "session must use the custom provider"
+    );
+    assert_eq!(att.pubkey, "f00d");
+}
