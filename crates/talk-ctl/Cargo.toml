@@ -1,0 +1,29 @@
+[package]
+name = "talk-ctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "talkctl"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["net", "rt", "macros", "io-util", "time"] }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+toml = { workspace = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+rand = { workspace = true }
+rpassword = "7"
+thiserror = "2"
+talk-core = { path = "../talk-core" }
+talk-keys = { path = "../talk-keys" }
+talk-mailstore = { path = "../talk-mailstore" }
+talk-protocol = { path = "../talk-protocol" }
+
+[dev-dependencies]
+tempfile = "3"
