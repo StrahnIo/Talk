@@ -7,9 +7,14 @@
 //! master key.
 
 pub mod dk;
+pub mod master;
 pub mod resolver;
 pub mod share;
 
 pub use dk::DataKey;
+pub use master::{
+    MasterKeyPair, SealError, generate_master_pair, master_public_from_bytes, master_pubkey,
+    open_envelope, seal_envelope,
+};
 pub use resolver::{Credential, KeyResolver, MasterKeyResolver, ShareResolver, WrappedByMaster};
 pub use share::{PerShareWrapper, Share, ShareError, ShareScheme, WrappedByShare, WrappedDkSet};
