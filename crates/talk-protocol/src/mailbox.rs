@@ -15,7 +15,7 @@
 //! Replies are status lines: `OK <text>` or `ERR <text>`.
 
 use crate::envelope::Payload;
-use crate::framing::{read_line, write_blob, write_line};
+use crate::framing::{read_blob, read_line, write_blob, write_line};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Outcome of a SEND.
@@ -91,7 +91,6 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     handler: &dyn AsyncSecureMailboxHandler,
 ) -> Result<(), crate::framing::FramingError> {
-    use crate::framing::read_blob;
     use tokio::io::BufReader;
 
     let mut stream = BufReader::new(stream);
@@ -250,5 +249,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureMailboxClient<S> {
     pub async fn quit(&mut self) -> Result<String, crate::framing::FramingError> {
         write_line(&mut self.stream, "QUIT").await?;
         read_line(&mut self.stream).await
+    }
+
+    /// `ATTEST <user> <ephemeral|attested>` — request an address attestation.
+    /// Returns the signed attestation blob, or the server's `ERR` line.
+    pub async fn attest(
+        &mut self,
+        user: &str,
+        mode: crate::attestation::AttestationMode,
+    ) -> Result<Vec<u8>, String> {
+        let mode = match mode {
+            crate::attestation::AttestationMode::Ephemeral => "ephemeral",
+            crate::attestation::AttestationMode::Attested => "attested",
+        };
+        write_line(&mut self.stream, &format!("ATTEST {user} {mode}"))
+            .await
+            .map_err(|e| e.to_string())?;
+        let line = read_line(&mut self.stream)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !line.starts_with("OK ") {
+            return Err(line);
+        }
+        read_blob(&mut self.stream).await.map_err(|e| e.to_string())
     }
 }
