@@ -196,6 +196,16 @@ crates/talk-imap/src/
 `tokio`, `tokio-rustls`/`rustls`, `rusqlite`, `base64`, `time`, `hex`,
 `libc` (localauth), `tracing`. No IMAP crates.
 
+## Debugging: session capture
+
+`talkd --capture-dir <dir>` writes one timestamped transcript per IMAP
+connection (`imap-<UTC>-<seq>.pcap.txt`) to `<dir>`. Each transcript is a
+text + hex dump of the session, with `C>` marking bytes read from the client
+and `S>` marking bytes written to it — every command, response, literal, and
+IDLE push. Useful for debugging what real clients (e.g. Thunderbird) send and
+how the server responds. Capture applies to both the IMAPS listener and the
+`UNSAFE_NO_TLS` plaintext listener.
+
 ## Open decisions
 
 - Whether `\Answered`/`\Deleted`/EXPUNGE semantics matter for v1, or whether the

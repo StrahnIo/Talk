@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use talk_imap::server::{ImapServer, serve_connection};
 use talk_mailstore::{NewMessage, SqliteMailStore};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 fn seed_store(dir: &tempfile::TempDir) -> Arc<SqliteMailStore> {
@@ -28,8 +28,8 @@ fn seed_store(dir: &tempfile::TempDir) -> Arc<SqliteMailStore> {
 }
 
 /// Read from `client` until `needle` appears, appending to `got`.
-async fn read_until(
-    client: &mut tokio::io::DuplexStream,
+async fn read_until<R: AsyncRead + Unpin>(
+    client: &mut R,
     buf: &mut [u8],
     got: &mut String,
     needle: &str,
@@ -192,4 +192,84 @@ async fn idle_receives_new_message_event() {
         .await
         .unwrap();
     assert!(got.contains("2 EXISTS"), "got: {got}");
+}
+
+#[tokio::test]
+async fn capture_dir_writes_per_session_transcripts() {
+    use std::io::Read as _;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = seed_store(&dir);
+    let capture_dir = dir.path().join("caps");
+
+    // Find a free port for the IMAP listener.
+    let probe = TcpListener::bind("127.0.0.1:0").await.expect("probe");
+    let port = probe.local_addr().expect("addr").port();
+    drop(probe);
+
+    let server = ImapServer::new(store, "talk.test").with_capture_dir(capture_dir.clone());
+    let addr = format!("127.0.0.1:{port}");
+    tokio::spawn(async move {
+        let _ = server.listen(&addr).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+    let mut buf = [0u8; 4096];
+    let mut got = String::new();
+    read_until(&mut client, &mut buf, &mut got, "* OK")
+        .await
+        .expect("greeting");
+    client
+        .write_all(b"A1 LOGIN alice secret\r\n")
+        .await
+        .unwrap();
+    read_until(&mut client, &mut buf, &mut got, "A1 OK")
+        .await
+        .expect("login");
+    client.write_all(b"A2 SELECT INBOX\r\n").await.unwrap();
+    read_until(&mut client, &mut buf, &mut got, "A2 OK")
+        .await
+        .expect("select");
+    client.write_all(b"A3 LOGOUT\r\n").await.unwrap();
+    read_until(&mut client, &mut buf, &mut got, "A3 OK")
+        .await
+        .expect("logout");
+
+    // Give the connection task a moment to finish the capture file.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let entries: Vec<_> = std::fs::read_dir(&capture_dir)
+        .expect("capture dir")
+        .collect::<Result<_, _>>()
+        .expect("entries");
+    assert_eq!(entries.len(), 1, "one transcript per session");
+
+    let path = entries[0].path();
+    let name = path.file_name().unwrap().to_string_lossy().to_string();
+    assert!(name.starts_with("imap-"), "{name}");
+    assert!(name.ends_with(".pcap.txt"), "{name}");
+
+    let mut contents = String::new();
+    std::fs::File::open(&path)
+        .unwrap()
+        .read_to_string(&mut contents)
+        .unwrap();
+    assert!(
+        contents.contains("# talkd IMAP session capture"),
+        "{contents}"
+    );
+    assert!(contents.contains("# peer="), "{contents}");
+    assert!(contents.contains("* OK [CAPABILITY"), "{contents}");
+    assert!(contents.contains("A1 LOGIN alice secret"), "{contents}");
+    assert!(contents.contains("LOGIN completed"), "{contents}");
+    assert!(contents.contains("C> 23 bytes"), "{contents}");
+    assert!(
+        contents.contains("C> hex: 4131204c4f47494e20"),
+        "{contents}"
+    );
+    assert!(contents.contains("S> 172 bytes"), "{contents}");
+    assert!(contents.contains("# ended="), "{contents}");
 }
