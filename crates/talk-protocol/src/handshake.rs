@@ -3,7 +3,7 @@
 //! Both servers authenticate as true to their DNS. The sending server issues a
 //! random challenge; the receiving server signs it with its domain private key.
 //! The sender verifies against the recipient's public domain key (published in
-//! DNS, `_zsmpt._tcp.<domain>` TXT record — the DKIM analog).
+//! DNS, `_zsmtp._tcp.<domain>` TXT record — the DKIM analog).
 //!
 //! The challenge binds both parties' domains, a session nonce, and a timestamp
 //! so it cannot be replayed or abused as a signing oracle (O10).
@@ -56,7 +56,7 @@ impl Challenge {
     /// The exact bytes that get signed.
     pub fn digest(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(b"zsmpt-v1");
+        hasher.update(b"zsmtp-v1");
         hasher.update(self.sender_domain.as_bytes());
         hasher.update([0u8]);
         hasher.update(self.receiver_domain.as_bytes());

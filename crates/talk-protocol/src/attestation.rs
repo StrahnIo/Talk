@@ -78,7 +78,7 @@ impl Attestation {
     /// The exact bytes that are signed — deterministic and canonical.
     pub fn canonical_digest(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(b"zsmpt-attest-v1");
+        hasher.update(b"zsmtp-attest-v1");
         hasher.update(self.domain.as_bytes());
         hasher.update([0u8]);
         hasher.update(self.user.as_bytes());

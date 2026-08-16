@@ -31,9 +31,9 @@ pub async fn serve(
         tokio::spawn(async move {
             let mut stream = stream;
             let mut session = ZsmptSession::with_domain_key(domain, domain_key).with_sink(sink);
-            info!("zsmpt session started");
+            info!("zsmtp session started");
             if let Err(e) = session.run(&mut stream).await {
-                warn!(error = %e, "zsmpt session closed with error");
+                warn!(error = %e, "zsmtp session closed with error");
             }
         });
     }

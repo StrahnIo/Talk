@@ -3,7 +3,7 @@ use std::sync::Arc;
 use talk_core::{config::Config, logging, sockets::SocketListener};
 use talk_imap::server::ImapServer;
 use talk_mailstore::SqliteMailStore;
-use talk_protocol::server as zsmpt_server;
+use talk_protocol::server as zsmtp_server;
 use talk_wallet::LightwalletdClient;
 use tracing::{error, info, warn};
 
@@ -65,7 +65,7 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
 
     let imap = ImapServer::new(store.clone(), "talkd");
     let sink = Arc::new(sink::StoreDeliverySink::new(store).with_events(imap.event_sender()));
-    tokio::spawn(zsmpt_server::serve(
+    tokio::spawn(zsmtp_server::serve(
         zsmtp_domain,
         domain_key,
         sink,
