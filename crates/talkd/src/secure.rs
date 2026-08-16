@@ -1,18 +1,17 @@
 //! The secure_mailbox handler: what the local client can ask the daemon to do.
 
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::SigningKey;
 use std::sync::Arc;
 use talk_mailstore::{SqliteMailStore, hash_password};
-use talk_protocol::attestation::{Attestation, AttestationMode, mint_pair};
+use talk_protocol::attestation::{
+    Attestation, AttestationMode, RegistrationAttestation, mint_pair,
+};
 use talk_protocol::envelope::Payload;
 use talk_protocol::mailbox::{AsyncSecureMailboxHandler, AttestResult, RegisterResult, SendResult};
 use talk_protocol::{
     DohDomainKeyResolver, DohEndpointResolver, DomainKeyResolver, EndpointResolver, connect_tcp_tls,
 };
 use tracing::warn;
-
-/// The registration attestation `R` content version tag.
-const REGISTRATION_ATTR_V1: &str = "reg-v1";
 
 /// Handles secure_mailbox commands, driving `ZsmptClient` to send invoices to
 /// other daemons, and issuing signed address attestations with the daemon's
@@ -78,22 +77,14 @@ impl SecureMailboxService {
         master_pubkey: &[u8],
         ivk_commitment: &Option<String>,
     ) -> String {
-        // R is a self-describing signed structure (JSON for now). The
-        // signature covers the canonical binding.
-        let body = RegistrationAttestation {
-            domain: self.sender_domain.clone(),
-            username: username.to_string(),
-            master_pubkey: hex::encode(master_pubkey),
-            ivk_commitment: ivk_commitment.clone(),
-            registered_at: unix_now(),
-            signature: Vec::new(),
-        };
-        let digest = body.digest();
-        let sig = self.domain_key.sign(&digest);
-        RegistrationAttestation {
-            signature: sig.to_bytes().to_vec(),
-            ..body
-        }
+        RegistrationAttestation::sign(
+            &self.sender_domain,
+            username,
+            master_pubkey,
+            ivk_commitment.as_deref(),
+            unix_now(),
+            &self.domain_key,
+        )
         .to_json()
     }
 }
@@ -134,7 +125,7 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
         };
         // Connect over implicit TLS (accept-any-cert; server identity is
         // the domain-key handshake).
-        let mut client = match connect_tcp_tls(
+        let client = match connect_tcp_tls(
             &endpoint,
             receiver_domain,
             talk_protocol::accept_any_cert_client_config(),
@@ -145,27 +136,20 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
             Ok(c) => c,
             Err(e) => return SendResult::Error(format!("connect: {e}")),
         };
-        if let Err(e) = client.hello().await {
-            return SendResult::Error(format!("hello: {e}"));
-        }
-        if let Err(e) = client.authenticate(&receiver_pub).await {
-            return SendResult::Error(format!("auth: {e}"));
-        }
-        // Request an ephemeral address for the recipient user.
         let user = recipient_mailbox.split('@').next().unwrap_or("");
-        if let Err(e) = client
-            .request_address(user, AttestationMode::Ephemeral, &receiver_pub)
-            .await
+        if let Err(e) = talk_protocol::send_invoice_over(
+            client,
+            sender_username,
+            user,
+            &receiver_pub,
+            message_id,
+            payload,
+            body,
+        )
+        .await
         {
-            return SendResult::Error(format!("addr: {e}"));
+            return SendResult::Error(format!("deliver: {e}"));
         }
-        if let Err(e) = client
-            .send_invoice(sender_username, message_id, payload, body)
-            .await
-        {
-            return SendResult::Error(format!("invoice: {e}"));
-        }
-        let _ = client.quit().await;
         SendResult::Ok(format!("delivered {message_id} to {recipient_mailbox}"))
     }
 
@@ -237,39 +221,6 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
             self.sender_domain,
             endpoint
         )
-    }
-}
-
-/// The registration attestation `R` content.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct RegistrationAttestation {
-    domain: String,
-    username: String,
-    master_pubkey: String,
-    ivk_commitment: Option<String>,
-    registered_at: i64,
-    signature: Vec<u8>,
-}
-
-impl RegistrationAttestation {
-    fn digest(&self) -> [u8; 32] {
-        use sha2::Digest;
-        let mut h = sha2::Sha256::new();
-        h.update(REGISTRATION_ATTR_V1);
-        h.update(self.domain.as_bytes());
-        h.update([0u8]);
-        h.update(self.username.as_bytes());
-        h.update([0u8]);
-        h.update(self.master_pubkey.as_bytes());
-        h.update([0u8]);
-        h.update(self.ivk_commitment.as_deref().unwrap_or("").as_bytes());
-        h.update([0u8]);
-        h.update(self.registered_at.to_be_bytes());
-        h.finalize().into()
-    }
-
-    fn to_json(&self) -> String {
-        serde_json::to_string(self).expect("registration attestation serializes")
     }
 }
 

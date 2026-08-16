@@ -183,6 +183,77 @@ pub fn mint_pair(_mode: AttestationMode) -> (String, String) {
     (format!("taddr-{hex}"), hex)
 }
 
+/// The registration attestation `R` content version tag.
+pub const REGISTRATION_ATTR_V1: &str = "reg-v1";
+
+/// The registration attestation `R`: a domain-key-signed binding of
+/// `{domain, username, master_pubkey, [ivk_commitment], registered_at}`.
+///
+/// Created once at registration; it is the canonical, tamper-evident record
+/// of `username ↔ wallet pubkey`. Live `ADDR` attestations (`L`) anchor to it
+/// (see `docs/attestation.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationAttestation {
+    pub domain: String,
+    pub username: String,
+    pub master_pubkey: String,
+    pub ivk_commitment: Option<String>,
+    pub registered_at: i64,
+    pub signature: Vec<u8>,
+}
+
+impl RegistrationAttestation {
+    /// The canonical signed bytes.
+    pub fn digest(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(REGISTRATION_ATTR_V1.as_bytes());
+        hasher.update(self.domain.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(self.username.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(self.master_pubkey.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(self.ivk_commitment.as_deref().unwrap_or("").as_bytes());
+        hasher.update([0u8]);
+        hasher.update(self.registered_at.to_be_bytes());
+        hasher.finalize().into()
+    }
+
+    /// Build `R` and sign it with the domain key.
+    pub fn sign(
+        domain: &str,
+        username: &str,
+        master_pubkey: &[u8],
+        ivk_commitment: Option<&str>,
+        registered_at: i64,
+        domain_key: &ed25519_dalek::SigningKey,
+    ) -> Self {
+        let binding = Self {
+            domain: domain.to_string(),
+            username: username.to_string(),
+            master_pubkey: hex::encode(master_pubkey),
+            ivk_commitment: ivk_commitment.map(str::to_string),
+            registered_at,
+            signature: Vec::new(),
+        };
+        let sig = domain_key.sign(&binding.digest());
+        Self {
+            signature: sig.to_bytes().to_vec(),
+            ..binding
+        }
+    }
+
+    /// Serialize for storage (JSON).
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).expect("registration attestation serializes")
+    }
+
+    /// Parse from stored JSON.
+    pub fn from_json(s: &str) -> Result<Self, AttestationError> {
+        serde_json::from_str(s).map_err(|_| AttestationError::InvalidKey)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +383,37 @@ mod tests {
         let (a, _) = mint_pair(AttestationMode::Ephemeral);
         let (b, _) = mint_pair(AttestationMode::Ephemeral);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn registration_attestation_signs_and_roundtrips() {
+        let key = keypair();
+        let r = RegistrationAttestation::sign(
+            "example.org",
+            "alice",
+            &[7u8; 32],
+            Some("ivk-hex"),
+            1234,
+            &key,
+        );
+        // The signature is over the canonical digest and verifies against the
+        // domain key.
+        let sig: [u8; 64] = r.signature.clone().try_into().unwrap();
+        key.verifying_key()
+            .verify(&r.digest(), &Signature::from_bytes(&sig))
+            .expect("R signature verifies");
+        // Signature binds the fields: changing the username breaks it.
+        let mut tampered = r.clone();
+        tampered.username = "bob".into();
+        let sig: [u8; 64] = tampered.signature.clone().try_into().unwrap();
+        assert!(
+            key.verifying_key()
+                .verify(&tampered.digest(), &Signature::from_bytes(&sig))
+                .is_err(),
+            "tampered R must not verify"
+        );
+        // JSON round-trip preserves everything.
+        let back = RegistrationAttestation::from_json(&r.to_json()).expect("parse");
+        assert_eq!(r, back);
     }
 }
