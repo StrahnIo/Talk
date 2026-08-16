@@ -49,6 +49,14 @@ pub trait DeliverySink: Send + Sync {
     ) -> DeliveryOutcome;
 }
 
+/// A directory of registered users. Implemented by the daemon to let the ZSMTP
+/// session resolve (and reject) real recipients, keeping `talk-protocol`
+/// decoupled from the mailstore.
+pub trait UserDirectory: Send + Sync {
+    /// Whether a username is registered on this server.
+    fn user_exists(&self, username: &str) -> bool;
+}
+
 /// A reply to a client command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
@@ -72,6 +80,8 @@ pub struct ZsmptSession {
     addr_user: Option<String>,
     /// Where delivered invoices go.
     sink: Option<Arc<dyn DeliverySink>>,
+    /// Registered-user directory (for resolving ADDR/INVOICE recipients).
+    directory: Option<Arc<dyn UserDirectory>>,
 }
 
 impl ZsmptSession {
@@ -84,6 +94,7 @@ impl ZsmptSession {
             peer_domain: None,
             addr_user: None,
             sink: None,
+            directory: None,
         }
     }
 
@@ -101,6 +112,7 @@ impl ZsmptSession {
             peer_domain: None,
             addr_user: None,
             sink: None,
+            directory: None,
         }
     }
 
@@ -108,6 +120,13 @@ impl ZsmptSession {
     /// storing (used by standalone tests).
     pub fn with_sink(mut self, sink: Arc<dyn DeliverySink>) -> Self {
         self.sink = Some(sink);
+        self
+    }
+
+    /// Attach a registered-user directory. Without one, ADDR accepts any
+    /// username (used by standalone tests).
+    pub fn with_directory(mut self, directory: Arc<dyn UserDirectory>) -> Self {
+        self.directory = Some(directory);
         self
     }
 
@@ -242,6 +261,15 @@ impl ZsmptSession {
             return Ok(Reply::Status(Status::new(
                 StatusCode::SYNTAX,
                 "ADDR requires a user",
+            )));
+        }
+        // Reject unknown users when a directory is attached.
+        if let Some(dir) = &self.directory
+            && !dir.user_exists(user)
+        {
+            return Ok(Reply::Status(Status::new(
+                StatusCode::PERM_REJECT,
+                format!("no such user: {user}"),
             )));
         }
         self.addr_user = Some(user.to_string());
@@ -854,5 +882,37 @@ mod tests {
         })
         .unwrap();
         s
+    }
+
+    #[test]
+    fn addr_rejects_unknown_user_with_directory() {
+        struct Dir;
+        impl UserDirectory for Dir {
+            fn user_exists(&self, username: &str) -> bool {
+                username == "alice"
+            }
+        }
+
+        let mut s = authenticated_session().with_directory(Arc::new(Dir));
+        // Known user: OK.
+        let reply = s
+            .handle(&Command::Addr {
+                mode: AddrMode::Ephemeral,
+                user: "alice".into(),
+            })
+            .unwrap();
+        assert!(matches!(reply, Reply::StatusWithBlob(st, _) if st.code.is_success()));
+
+        // Unknown user: 550.
+        let reply = s
+            .handle(&Command::Addr {
+                mode: AddrMode::Ephemeral,
+                user: "ghost".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            reply,
+            Reply::Status(Status::new(StatusCode::PERM_REJECT, "no such user: ghost"))
+        );
     }
 }

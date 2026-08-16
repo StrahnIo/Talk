@@ -118,11 +118,14 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     } else {
         info!("no IMAP TLS cert/key configured; listening plaintext");
     }
-    let sink = Arc::new(sink::StoreDeliverySink::new(store).with_events(imap.event_sender()));
+    let sink =
+        Arc::new(sink::StoreDeliverySink::new(store.clone()).with_events(imap.event_sender()));
+    let directory = Arc::new(sink::StoreUserDirectory::new(store.clone()));
     tokio::spawn(zsmtp_server::serve(
         zsmtp_domain,
         domain_key,
         sink,
+        directory,
         zsmtp_listener,
     ));
 

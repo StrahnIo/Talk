@@ -1,6 +1,6 @@
 //! ZSMTP server-side connection handling over a Unix socket.
 
-use crate::session::{DeliverySink, ZsmptSession};
+use crate::session::{DeliverySink, UserDirectory, ZsmptSession};
 use std::sync::Arc;
 use tokio::net::UnixListener;
 use tracing::{info, warn};
@@ -10,11 +10,13 @@ use tracing::{info, warn};
 /// `domain` is this server's domain (used for the greeting and as the
 /// responder in the domain-key handshake). `domain_key` is the stable signing
 /// key published in DNS, so attestations verify across sessions. Every
-/// delivered invoice is handed to `sink`.
+/// delivered invoice is handed to `sink`; recipients are validated against
+/// `directory` (unknown users rejected with 550).
 pub async fn serve(
     domain: String,
     domain_key: ed25519_dalek::SigningKey,
     sink: Arc<dyn DeliverySink>,
+    directory: Arc<dyn UserDirectory>,
     listener: UnixListener,
 ) {
     loop {
@@ -27,10 +29,13 @@ pub async fn serve(
         };
         let domain = domain.clone();
         let sink = sink.clone();
+        let directory = directory.clone();
         let domain_key = domain_key.clone();
         tokio::spawn(async move {
             let mut stream = stream;
-            let mut session = ZsmptSession::with_domain_key(domain, domain_key).with_sink(sink);
+            let mut session = ZsmptSession::with_domain_key(domain, domain_key)
+                .with_sink(sink)
+                .with_directory(directory);
             info!("zsmtp session started");
             if let Err(e) = session.run(&mut stream).await {
                 warn!(error = %e, "zsmtp session closed with error");

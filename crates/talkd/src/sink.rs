@@ -5,9 +5,27 @@ use std::path::Path;
 use std::sync::Arc;
 use talk_imap::server::MailboxEvent;
 use talk_mailstore::{MessageFlags, NewMessage, SqliteMailStore};
-use talk_protocol::{DeliveryOutcome, DeliverySink, Payload};
+use talk_protocol::{DeliveryOutcome, DeliverySink, Payload, UserDirectory};
 use tokio::sync::broadcast;
 use tracing::warn;
+
+/// Registered-user directory backed by the mailstore. Lets the ZSMTP session
+/// reject unknown recipients with 550.
+pub struct StoreUserDirectory {
+    store: Arc<SqliteMailStore>,
+}
+
+impl StoreUserDirectory {
+    pub fn new(store: Arc<SqliteMailStore>) -> Self {
+        Self { store }
+    }
+}
+
+impl UserDirectory for StoreUserDirectory {
+    fn user_exists(&self, username: &str) -> bool {
+        matches!(self.store.get_user(username), Ok(Some(_)))
+    }
+}
 
 /// Load the domain signing key from `data_dir/domainkey`, or create + persist
 /// it on first boot. The public half is what peers verify against (published

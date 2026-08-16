@@ -25,6 +25,10 @@ pub use client::{ClientError, ClientState, ZsmptClient, connect_tcp, connect_uni
 pub use dns::{DohDomainKeyResolver, DomainKeyResolver, ResolverError, StaticDomainKeyResolver};
 pub use envelope::{Envelope, Payload, Recipient};
 pub use handshake::{Challenge, ChallengeResponse, DomainKey, HandshakeError};
-pub use mailbox::{AttestResult, RegisterResult, SecureMailboxClient, SecureMailboxHandler, SendResult};
-pub use session::{DeliveryOutcome, DeliverySink, Reply, SessionState, ZsmptSession};
+pub use mailbox::{
+    AttestResult, RegisterResult, SecureMailboxClient, SecureMailboxHandler, SendResult,
+};
+pub use session::{
+    DeliveryOutcome, DeliverySink, Reply, SessionState, UserDirectory, ZsmptSession,
+};
 pub use status::{Status, StatusCode};
