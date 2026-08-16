@@ -20,8 +20,10 @@
 
 The mailbox is **server-blind end-to-end** (Model A): the server stores
 ciphertext only and never holds keys that can decrypt user data at rest.
-Invoices are sealed to the recipient's key material; the server decrypts only
-during an explicit app-password request. See [`security.md`](security.md).
+**The server never holds the IVK** (D10) and never decrypts — app-password
+shares are used for *authentication only*. Invoices are sealed to the
+recipient's key material; decryption is the client's job. See
+[`security.md`](security.md).
 
 ## Why verification is sound
 
@@ -117,16 +119,23 @@ was signed. The exact format of the signed payload is open.
 
 ## Sockets
 
-Three sockets:
+Four listeners:
 
-- **secure_mailbox.sock** — local only; uses user authentication. The user/wallet
-  interface (signing happens here; this socket's caller is a human or their
+- **secure_mailbox.sock** (Unix) — local user↔daemon interface, authenticated at
+  the machine boundary. Commands: `REGISTER`, `SEND`, `ATTEST`, `STATUS`,
+  `QUIT`. Signing happens here (this socket's caller is a human or their
   software).
-- **mailbox.sock** — the IMAP listener (hand-rolled IMAP4rev1 subset; IDLE push;
-  IMAPS-first). Disabled by default. See [`imap.md`](imap.md). HTTP/2 on the
-  mailbox was not hardline and is not a day-one requirement.
-- **zsmtp.sock** — outbound delivery: prepares a transaction, prompts the caller
-  to sign, then sends to another server's account. See [`zsmtp.md`](zsmtp.md).
+- **zsmtp.sock** (Unix) — local ZSMTP server (daemon-to-daemon receive).
+- **ZSMTP over TCP** (`zsmtp_listen`, e.g. `0.0.0.0:465`) — the same ZSMTP
+  server exposed on the network with **implicit TLS** (SMTPS-style, TLS from the
+  first byte; no STARTTLS). Shares the `[tls]` cert/key with IMAPS. The ZSMTP
+  domain-key handshake runs *on top of* TLS: TLS authenticates the channel,
+  domain keys authenticate the servers.
+- **imap_listen** (TCP) — the IMAP/IMAPS listener (hand-rolled IMAP4rev1
+  subset; IDLE push; IMAPS-first). See [`imap.md`](imap.md).
+
+The transport is abstracted in the ZSMTP server: both Unix and TCP listeners
+hand accepted streams to the same per-connection session runner.
 
 ## Delivery → mailbox pipeline
 

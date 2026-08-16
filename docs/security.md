@@ -19,14 +19,19 @@ message is ciphertext to it — including transparent invoices.
 
 | Layer | Mechanism | Protects against |
 |---|---|---|
-| Transport | TLS / IMAPS (ECDHE) | Network eavesdroppers, MITM — not the operator |
-| At rest | SQLCipher (optional, see below) | Someone who steals the database file |
+| Transport | TLS (IMAPS on TCP; ZSMTP implicit TLS on TCP:465) | Network eavesdroppers, MITM — not the operator |
+| At rest | SQLCipher (optional/deferred, see below) | Someone who steals the database file |
 | Application | Invoice sealed to recipient key material | The operator, the mailbox server, everyone |
 
 Application-layer confidentiality is the load-bearing one. IMAP has no native
 content encryption; TLS only protects transport; SQLCipher only protects at
 rest. True end-to-end confidentiality against a *live* operator comes solely
 from the application layer.
+
+On ZSMTP's TCP transport specifically: **implicit TLS** (SMTPS-style, TLS from
+the first byte) protects the channel; the domain-key handshake authenticates
+the servers; the invoice payload is sealed to the recipient. Three distinct
+layers, each with its own job.
 
 ## Key hierarchy (DK wrapper ladder)
 
@@ -60,10 +65,7 @@ A leaked or suspected share is revoked by **dropping its wrapper and re-wrapping
 DK under the surviving shares**. DK never changes and no message data is
 re-encrypted; the revoked share is permanently useless for future traffic.
 
-Re-wrapping requires the server to transiently hold DK (unwrap from any
-surviving wrapper, re-wrap under the rest). That brief window is the same trust
-the server already has during an app-password request; DK must be zeroized
-after the re-wrap.
+Re-wrapping is a **client-side** operation (the server never holds DK, per D10).
 
 ### Threshold later
 
@@ -105,9 +107,10 @@ hash of the invoice appears on-chain via `OP_RETURN`.
   the recipient's key material. An interceptor with every key except the
   recipient's IVK cannot decrypt the invoice, link any on-chain tx to it, or
   prove a payment attempt.
-- **Connection is observable.** The ECDH session makes the transcript deniable;
-  the fact of connection (IP, timing, server logs) remains observable. Accepted
-  scope reduction, not connection anonymity.
+- **Connection is observable.** The fact of connection (IP, timing, server
+  logs) remains observable. Accepted scope reduction, not connection anonymity.
+  (A future ECDH session would make the *transcript* deniable; TLS already
+  protects the transport.)
 
 ## Proof-of-integrity is delivery, not receipt
 
@@ -120,6 +123,9 @@ recipient's awareness is not proven.
 
 - **App-password sessions** hand the server a share; the server authenticates
   with it but never decrypts. The share is a full key to the client-side DK.
+- **ZSMTP over TLS requires a valid `[tls]` cert/key.** If absent, the TCP
+  listener serves plaintext (dev/testing). A network-facing plaintext ZSMTP
+  port is unsafe and should only be used on trusted networks.
 - **A compromised *running* daemon** sees everything a user could fetch.
   SQLCipher protects at rest, not in memory; application-layer sealing protects
   against a live operator only when the user never shares key material.

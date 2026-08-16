@@ -68,22 +68,22 @@ This is an opt-in per-user tradeoff; by default the server never holds the IVK.
 ## Sender keyring (authenticate a sender)
 
 Receiving users can build a **server-side keyring** of trusted senders. The
-sender's attested key rides in the **INVOICE envelope** (with its `R`).
+sender's identity (username) rides in the **INVOICE envelope** today; carrying
+the sender's attested key + `R` with the message is a follow-on (D22).
 
 - **Bootstrap:** the user's *client* initiates an authentication request (manual
   or background), fetches the sender's server-attested key, verifies the
   attestation, then pins `sender@domain → pubkey` into the keyring. **This is
   not the server's job** — the server never initiates lookups; querying the
   keyring is a later milestone.
-- **Trust state computed at delivery:**
-  - ridden key **matches** the keyring entry and the signature verifies →
-    `trusted`
-  - key present but **≠** keyring entry, or signature fails → `untrusted`
-    (flagged immediately)
-  - **no key, or no keyring entry** → `unverified` (neutral; can be pinned later)
-- The server only does keyring matching + signature verification — it does not
-  independently verify the ridden `R` against DNS (that is the client's job at
-  pin time).
+- **Trust state computed at delivery** (implemented):
+  - sender pinned in the recipient's keyring → `trusted`
+  - anonymous sender → `unverified`
+  - (with key riding, later) key present but **≠** keyring entry, or signature
+    fails → `untrusted` (flagged immediately)
+- The server only does keyring matching (+ signature verification once key
+  riding lands) — it does not independently verify the sender's `R` against DNS
+  (that is the client's job at pin time).
 
 **Privacy:** purely opt-in on both ends. A sender only becomes pinned if they
 opt into being attested *and* the receiver chooses to authenticate them.
@@ -102,13 +102,14 @@ Anonymous-by-default is preserved — Zcash does not reveal sender addresses.
 
 ## Modularity
 
-Attestation and address minting are behind traits so the mechanisms can be
-swapped:
+Address minting is behind a trait; attestation signing currently uses the
+domain key directly in the session/daemon (an `Attester` trait is a future
+extraction):
 
 | Trait | v1 impl | Swappable to |
 |---|---|---|
-| `Attester` | `DomainKeyAttester` | keyserver attestation, on-ledger anchoring |
 | `AddressProvider` | `PlaceholderAddressProvider` | `IvkAddressProvider` (owns IVK; may run on its own socket/port) |
+| `Attester` (planned) | — (domain-key signing in session) | keyserver attestation, on-ledger anchoring |
 
 The identity instrument question (keybase.io was shut down in 2023) is open —
 see O9 in [`decisions.md`](decisions.md).
