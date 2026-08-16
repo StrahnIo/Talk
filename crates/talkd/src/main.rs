@@ -20,6 +20,9 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
+    // Select the ring-based crypto provider before any rustls use.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let cli = Cli::parse();
 
     let cfg = match Config::load(&cli.config) {
@@ -90,7 +93,24 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     let zsmtp_listener = zsmtp.to_tokio()?;
     let zsmtp_domain = sender_domain.clone();
 
-    let imap = ImapServer::new(store.clone(), "talkd");
+    let mut imap = ImapServer::new(store.clone(), "talkd");
+    // Enable IMAPS if a cert/key pair is configured (files exist).
+    if cfg.tls.cert.exists() && cfg.tls.key.exists() {
+        match talk_imap::tls::load_server_config(&cfg.tls.cert, &cfg.tls.key) {
+            Ok(config) => {
+                info!(
+                    cert = %cfg.tls.cert.display(),
+                    "IMAP TLS enabled (IMAPS)"
+                );
+                imap = imap.with_tls(config);
+            }
+            Err(e) => {
+                error!(error = %e, "failed to load IMAP TLS config; falling back to plaintext");
+            }
+        }
+    } else {
+        info!("no IMAP TLS cert/key configured; listening plaintext");
+    }
     let sink = Arc::new(sink::StoreDeliverySink::new(store).with_events(imap.event_sender()));
     tokio::spawn(zsmtp_server::serve(
         zsmtp_domain,

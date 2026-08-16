@@ -64,6 +64,7 @@ async fn boot_tls_server() -> (u16, Arc<SqliteMailStore>) {
 
 #[tokio::test]
 async fn tls_client_completes_session() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let (port, _store) = boot_tls_server().await;
 
     // A rustls client with a dangerous verifier (self-signed cert).

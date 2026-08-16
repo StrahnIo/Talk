@@ -3493,6 +3493,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "rand",
+ "rustls",
  "serde",
  "talk-core",
  "talk-imap",
