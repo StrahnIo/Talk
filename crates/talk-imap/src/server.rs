@@ -3,8 +3,8 @@
 use crate::parse::{CommandReader, ParseError};
 use crate::response;
 use crate::session::{Session, State};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use talk_mailstore::SqliteMailStore;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;

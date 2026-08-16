@@ -219,13 +219,24 @@ async fn capture_dir_writes_per_session_transcripts() {
         .expect("connect");
     let mut buf = [0u8; 4096];
     let mut got = String::new();
-    read_until(&mut client, &mut buf, &mut got, "* OK").await.expect("greeting");
-    client.write_all(b"A1 LOGIN alice secret\r\n").await.unwrap();
-    read_until(&mut client, &mut buf, &mut got, "A1 OK").await.expect("login");
+    read_until(&mut client, &mut buf, &mut got, "* OK")
+        .await
+        .expect("greeting");
+    client
+        .write_all(b"A1 LOGIN alice secret\r\n")
+        .await
+        .unwrap();
+    read_until(&mut client, &mut buf, &mut got, "A1 OK")
+        .await
+        .expect("login");
     client.write_all(b"A2 SELECT INBOX\r\n").await.unwrap();
-    read_until(&mut client, &mut buf, &mut got, "A2 OK").await.expect("select");
+    read_until(&mut client, &mut buf, &mut got, "A2 OK")
+        .await
+        .expect("select");
     client.write_all(b"A3 LOGOUT\r\n").await.unwrap();
-    read_until(&mut client, &mut buf, &mut got, "A3 OK").await.expect("logout");
+    read_until(&mut client, &mut buf, &mut got, "A3 OK")
+        .await
+        .expect("logout");
 
     // Give the connection task a moment to finish the capture file.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -246,13 +257,19 @@ async fn capture_dir_writes_per_session_transcripts() {
         .unwrap()
         .read_to_string(&mut contents)
         .unwrap();
-    assert!(contents.contains("# talkd IMAP session capture"), "{contents}");
+    assert!(
+        contents.contains("# talkd IMAP session capture"),
+        "{contents}"
+    );
     assert!(contents.contains("# peer="), "{contents}");
     assert!(contents.contains("* OK [CAPABILITY"), "{contents}");
     assert!(contents.contains("A1 LOGIN alice secret"), "{contents}");
     assert!(contents.contains("LOGIN completed"), "{contents}");
     assert!(contents.contains("C> 23 bytes"), "{contents}");
-    assert!(contents.contains("C> hex: 4131204c4f47494e20"), "{contents}");
+    assert!(
+        contents.contains("C> hex: 4131204c4f47494e20"),
+        "{contents}"
+    );
     assert!(contents.contains("S> 172 bytes"), "{contents}");
     assert!(contents.contains("# ended="), "{contents}");
 }

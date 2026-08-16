@@ -89,9 +89,7 @@ fn capture_path(dir: &Path, seq: u64) -> std::io::Result<PathBuf> {
 
 fn now_compact() -> String {
     use time::macros::format_description;
-    let fmt = format_description!(
-        "[year][month][day]-[hour][minute][second]-[subsecond digits:3]"
-    );
+    let fmt = format_description!("[year][month][day]-[hour][minute][second]-[subsecond digits:3]");
     time::OffsetDateTime::now_utc()
         .format(&fmt)
         .unwrap_or_else(|_| "unknown".to_string())
@@ -179,7 +177,9 @@ mod tests {
         tokio::io::AsyncWriteExt::write_all(&mut captured, b"* OK ready\r\n")
             .await
             .unwrap();
-        tokio::io::AsyncWriteExt::flush(&mut captured).await.unwrap();
+        tokio::io::AsyncWriteExt::flush(&mut captured)
+            .await
+            .unwrap();
         captured.finish();
 
         let entries = std::fs::read_dir(dir.path()).unwrap();
@@ -203,7 +203,10 @@ mod tests {
         );
         assert!(contents.contains("S> 12 bytes"), "{contents}");
         assert!(contents.contains("* OK ready"), "{contents}");
-        assert!(contents.contains("S> hex: 2a204f4b207265616479"), "{contents}");
+        assert!(
+            contents.contains("S> hex: 2a204f4b207265616479"),
+            "{contents}"
+        );
         assert!(contents.contains("# ended="), "{contents}");
     }
 
