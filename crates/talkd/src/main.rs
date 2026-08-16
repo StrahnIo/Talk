@@ -16,6 +16,10 @@ struct Cli {
     /// Path to the TOML config file.
     #[arg(short, long, default_value = "config.toml")]
     config: std::path::PathBuf,
+    /// Directory to capture per-session IMAP transcripts (one timestamped
+    /// `imap-*.pcap.txt` per connection).
+    #[arg(long)]
+    capture_dir: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -36,13 +40,16 @@ async fn main() {
     logging::init(&cfg.general.log_level);
     info!(config = %cli.config.display(), "loading config");
 
-    if let Err(e) = run(cfg).await {
+    if let Err(e) = run(cfg, cli.capture_dir).await {
         error!(error = %e, "talkd exiting with error");
         std::process::exit(1);
     }
 }
 
-async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(
+    cfg: talk_core::config::Config,
+    capture_dir: Option<std::path::PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let secure_mailbox = SocketListener::bind(&cfg.sockets.secure_mailbox)?;
     info!(path = %secure_mailbox.local_path().display(), "secure_mailbox.sock listening");
 
@@ -73,6 +80,9 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     let zsmtp_domain = sender_domain.clone();
 
     let mut imap = ImapServer::new(store.clone(), "talkd").with_domain(sender_domain.clone());
+    if let Some(dir) = &capture_dir {
+        imap = imap.with_capture_dir(dir.clone());
+    }
     // Set the user auth mode from config.
     let imap_auth = match cfg.auth.mode {
         talk_core::config::AuthMode::Database => talk_imap::AuthMode::Database,
@@ -193,6 +203,10 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
         let plain_imap = ImapServer::new(store.clone(), "talkd")
             .with_auth_mode(imap_auth)
             .with_domain(sender_domain.clone());
+        let plain_imap = match &capture_dir {
+            Some(dir) => plain_imap.with_capture_dir(dir.clone()),
+            None => plain_imap,
+        };
         info!(addr = %addr, "UNSAFE_NO_TLS set: binding plaintext IMAP (INSECURE)");
         tokio::spawn(async move {
             if let Err(e) = plain_imap.listen(&addr).await {
