@@ -23,6 +23,7 @@ pub struct ImapServer {
     hostname: String,
     events: broadcast::Sender<MailboxEvent>,
     tls: Option<tokio_rustls::TlsAcceptor>,
+    auth_mode: crate::session::AuthMode,
 }
 
 impl ImapServer {
@@ -33,12 +34,19 @@ impl ImapServer {
             hostname: hostname.into(),
             events,
             tls: None,
+            auth_mode: crate::session::AuthMode::Database,
         }
     }
 
     /// Enable IMAPS: wrap every accepted connection in TLS.
     pub fn with_tls(mut self, config: Arc<rustls::ServerConfig>) -> Self {
         self.tls = Some(tokio_rustls::TlsAcceptor::from(config));
+        self
+    }
+
+    /// Set the user authentication mode.
+    pub fn with_auth_mode(mut self, mode: crate::session::AuthMode) -> Self {
+        self.auth_mode = mode;
         self
     }
 
@@ -53,6 +61,7 @@ impl ImapServer {
             username: String::new(),
             user_id: 0,
             store: self.store.clone(),
+            auth_mode: self.auth_mode,
         }
     }
 
@@ -94,6 +103,7 @@ impl Clone for ImapServer {
             hostname: self.hostname.clone(),
             events: self.events.clone(),
             tls: self.tls.clone(),
+            auth_mode: self.auth_mode,
         }
     }
 }

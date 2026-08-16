@@ -4,8 +4,10 @@
 //! `tokio::task::spawn_blocking`. Message bodies are stored as opaque ciphertext
 //! per Model A — the store never inspects content.
 
+pub mod password;
 pub mod sqlite;
 
+pub use password::{hash_password, verify_password};
 pub use sqlite::SqliteMailStore;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,6 +19,10 @@ pub struct User {
     pub username: String,
     /// Encoded master public key (DK wrap target for compatible clients).
     pub master_pubkey: Vec<u8>,
+    /// Optional IVK commitment (dynamic-address mode). `None` = static mode.
+    pub ivk_commitment: Option<String>,
+    /// The registration attestation `R` (tamper-evident username↔pubkey binding).
+    pub registration_attestation: Option<String>,
 }
 
 /// Metadata for a message — everything the IMAP server can expose without
@@ -31,6 +37,10 @@ pub struct MessageMeta {
     pub flags: MessageFlags,
     pub subject: String,
     pub size: u64,
+    /// Sender mailbox (`user@domain`), empty if anonymous.
+    pub sender: String,
+    /// Sender trust state: `trusted` | `untrusted` | `unverified`.
+    pub trust_state: String,
 }
 
 /// A full message including its opaque (ciphertext) body.
@@ -48,6 +58,29 @@ pub struct NewMessage {
     pub subject: String,
     pub body: Vec<u8>,
     pub flags: MessageFlags,
+    /// The sender mailbox (`user@domain`), stored as `From:`. Empty if
+    /// anonymous.
+    pub sender: String,
+    /// Sender trust state: `trusted` | `untrusted` | `unverified`.
+    pub trust_state: String,
+}
+
+impl NewMessage {
+    /// Build a new message with no sender and unverified trust.
+    pub fn invoice(
+        message_id: impl Into<String>,
+        subject: impl Into<String>,
+        body: Vec<u8>,
+    ) -> Self {
+        Self {
+            message_id: message_id.into(),
+            subject: subject.into(),
+            body,
+            flags: MessageFlags::default(),
+            sender: String::new(),
+            trust_state: "unverified".to_string(),
+        }
+    }
 }
 
 /// IMAP system flags, stored as a bitmask.

@@ -15,6 +15,15 @@ pub enum State {
     Selected,
 }
 
+/// How the IMAP server authenticates users.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    /// Verify the password against the store's argon2 hash.
+    Database,
+    /// Verify the connecting OS user is a member of the `zsmtp` group.
+    LocalAuth,
+}
+
 /// A session for one connection. Owns the authenticated user's identity and
 /// their mailbox handle.
 pub struct Session {
@@ -22,6 +31,7 @@ pub struct Session {
     pub username: String,
     pub user_id: i64,
     pub store: Arc<SqliteMailStore>,
+    pub auth_mode: AuthMode,
 }
 
 impl Session {
@@ -160,9 +170,22 @@ impl Session {
             }
             return response::tagged(tag, Status::No, "Authentication failed");
         }
-        // Standard login: v1 accepts any non-empty password as a placeholder
-        // until password hashing is implemented.
-        if password.is_empty() {
+        // Standard login: authenticate per the configured auth mode.
+        let ok = match self.auth_mode {
+            AuthMode::Database => {
+                // Verify the password against the stored argon2 hash.
+                let Some(hash) = self.store.password_hash(&base).ok().flatten() else {
+                    return response::tagged(tag, Status::No, "Authentication failed");
+                };
+                talk_mailstore::verify_password(password, &hash).unwrap_or(false)
+            }
+            AuthMode::LocalAuth => {
+                // The connecting OS user must be a member of the `zsmtp` group
+                // and must match the mailbox username.
+                is_in_zsmtp_group(&base)
+            }
+        };
+        if !ok {
             return response::tagged(tag, Status::No, "Authentication failed");
         }
         self.user_id = user.id;
@@ -634,4 +657,31 @@ fn envelope_response(message_id: &str, subject: &str) -> String {
     format!(
         "{date} {subject} {sender} {from} {reply_to} {to} {cc} {bcc} {in_reply_to} {message_id}"
     )
+}
+
+/// Whether `username` is a member of the OS `zsmtp` group. Used by the
+/// `localauth` auth mode: the connecting user must be in the group and must
+/// match their mailbox username.
+fn is_in_zsmtp_group(username: &str) -> bool {
+    // A user is "in the zsmtp group" if the zsmtp group's member list contains
+    // them. This uses `getgrnam`; if the group does not exist, deny.
+    unsafe {
+        let gr = libc::getgrnam(c"zsmtp".as_ptr().cast());
+        if gr.is_null() {
+            return false;
+        }
+        let mem = (*gr).gr_mem;
+        if mem.is_null() {
+            return false;
+        }
+        let mut i = 0;
+        while !(*mem.add(i)).is_null() {
+            let name = std::ffi::CStr::from_ptr(*mem.add(i));
+            if name.to_bytes() == username.as_bytes() {
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
 }

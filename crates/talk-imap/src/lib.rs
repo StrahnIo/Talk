@@ -5,3 +5,5 @@ pub mod response;
 pub mod server;
 pub mod session;
 pub mod tls;
+
+pub use session::AuthMode;

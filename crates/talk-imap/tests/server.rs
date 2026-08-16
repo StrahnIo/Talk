@@ -1,24 +1,27 @@
 use std::sync::Arc;
 use talk_imap::server::{ImapServer, serve_connection};
-use talk_mailstore::{MessageFlags, NewMessage, SqliteMailStore};
+use talk_mailstore::{NewMessage, SqliteMailStore};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 fn seed_store(dir: &tempfile::TempDir) -> Arc<SqliteMailStore> {
     let store = Arc::new(SqliteMailStore::open(dir.path().join("mailbox.db")).expect("open"));
     let user_id = store
-        .create_user("alice", "hash", &[0u8; 32])
+        .create_user(
+            "alice",
+            &talk_mailstore::hash_password("secret").expect("hash"),
+            &[0u8; 32],
+        )
         .expect("create user")
         .id;
     store
         .append_message(
             user_id,
-            NewMessage {
-                message_id: "msg-1".to_string(),
-                subject: "New sealed invoice".to_string(),
-                body: b"opaque-ciphertext".to_vec(),
-                flags: MessageFlags::default(),
-            },
+            NewMessage::invoice(
+                "msg-1".to_string(),
+                "New sealed invoice".to_string(),
+                b"opaque-ciphertext".to_vec(),
+            ),
         )
         .expect("append");
     store
@@ -163,12 +166,11 @@ async fn idle_receives_new_message_event() {
     store
         .append_message(
             user_id,
-            NewMessage {
-                message_id: "msg-2".to_string(),
-                subject: "New sealed invoice".to_string(),
-                body: b"more".to_vec(),
-                flags: MessageFlags::default(),
-            },
+            NewMessage::invoice(
+                "msg-2".to_string(),
+                "New sealed invoice".to_string(),
+                b"more".to_vec(),
+            ),
         )
         .expect("append");
     events

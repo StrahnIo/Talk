@@ -13,14 +13,20 @@ path = "src/main.rs"
 tokio = { workspace = true, features = ["net", "sync", "time", "rt", "macros", "signal"] }
 clap = { workspace = true }
 serde = { workspace = true }
+serde_json = "1"
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = { workspace = true }
 rustls = { workspace = true }
+hex = "0.4"
+sha2 = "0.10"
 talk-core = { path = "../talk-core" }
 talk-imap = { path = "../talk-imap" }
 talk-mailstore = { path = "../talk-mailstore" }
 talk-protocol = { path = "../talk-protocol" }
 talk-wallet = { path = "../talk-wallet" }
+
+[dev-dependencies]
+tempfile = "3"

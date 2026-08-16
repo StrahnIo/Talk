@@ -53,6 +53,16 @@ impl SqliteMailStore {
                 created_at    INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS keyring_entries (
+                user_id       INTEGER NOT NULL REFERENCES users(id),
+                sender_mailbox TEXT   NOT NULL,
+                sender_pubkey  TEXT   NOT NULL,
+                attestation    BLOB   NOT NULL,
+                state          TEXT   NOT NULL,
+                first_seen     INTEGER NOT NULL,
+                PRIMARY KEY (user_id, sender_mailbox)
+            );
+
             CREATE TABLE IF NOT EXISTS shares (
                 user_id     INTEGER NOT NULL REFERENCES users(id),
                 share_id    TEXT    NOT NULL,
@@ -80,6 +90,8 @@ impl SqliteMailStore {
                 subject     TEXT    NOT NULL,
                 size        INTEGER NOT NULL,
                 body_blob   BLOB    NOT NULL,
+                sender      TEXT    NOT NULL DEFAULT '',
+                trust_state TEXT    NOT NULL DEFAULT 'unverified',
                 UNIQUE (mailbox_id, message_id)
             );
 
@@ -89,6 +101,38 @@ impl SqliteMailStore {
                 ON messages (mailbox_id, flags);
             "#,
         )?;
+        // Migrations for columns added after the initial schema.
+        for (table, col, ddl) in [
+            (
+                "users",
+                "ivk_commitment",
+                "ALTER TABLE users ADD COLUMN ivk_commitment TEXT",
+            ),
+            (
+                "users",
+                "registration_attestation",
+                "ALTER TABLE users ADD COLUMN registration_attestation TEXT",
+            ),
+            (
+                "messages",
+                "sender",
+                "ALTER TABLE messages ADD COLUMN sender TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "messages",
+                "trust_state",
+                "ALTER TABLE messages ADD COLUMN trust_state TEXT NOT NULL DEFAULT 'unverified'",
+            ),
+        ] {
+            let has: i64 = guard.query_row(
+                &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+                params![col],
+                |r| r.get(0),
+            )?;
+            if has == 0 {
+                guard.execute_batch(ddl)?;
+            }
+        }
         Ok(())
     }
 
@@ -99,6 +143,19 @@ impl SqliteMailStore {
         password_hash: &str,
         master_pubkey: &[u8],
     ) -> Result<User, StoreError> {
+        self.create_user_full(username, password_hash, master_pubkey, None, None)
+    }
+
+    /// Create a user with an optional IVK commitment and registration
+    /// attestation, plus their INBOX.
+    pub fn create_user_full(
+        &self,
+        username: &str,
+        password_hash: &str,
+        master_pubkey: &[u8],
+        ivk_commitment: Option<String>,
+        registration_attestation: Option<String>,
+    ) -> Result<User, StoreError> {
         let now = now_secs();
         let guard = self.lock()?;
         guard.execute(
@@ -107,6 +164,18 @@ impl SqliteMailStore {
             params![username, password_hash, master_pubkey, now],
         )?;
         let user_id = guard.last_insert_rowid();
+        if let Some(ivk) = ivk_commitment.as_deref() {
+            guard.execute(
+                "UPDATE users SET ivk_commitment = ?1 WHERE id = ?2",
+                params![ivk, user_id],
+            )?;
+        }
+        if let Some(r) = registration_attestation.as_deref() {
+            guard.execute(
+                "UPDATE users SET registration_attestation = ?1 WHERE id = ?2",
+                params![r, user_id],
+            )?;
+        }
         let uidvalidity = now as u32;
         guard.execute(
             "INSERT INTO mailboxes (user_id, name, uidvalidity) VALUES (?1, 'INBOX', ?2)",
@@ -116,22 +185,82 @@ impl SqliteMailStore {
             id: user_id,
             username: username.to_string(),
             master_pubkey: master_pubkey.to_vec(),
+            ivk_commitment,
+            registration_attestation,
         })
     }
 
     /// Look up a user by username.
     pub fn get_user(&self, username: &str) -> Result<Option<User>, StoreError> {
         let guard = self.lock()?;
-        let mut stmt =
-            guard.prepare("SELECT id, username, master_pubkey FROM users WHERE username = ?1")?;
+        let mut stmt = guard.prepare(
+            "SELECT id, username, master_pubkey, ivk_commitment, registration_attestation
+             FROM users WHERE username = ?1",
+        )?;
         let mut rows = stmt.query_map(params![username], |row| {
             Ok(User {
                 id: row.get(0)?,
                 username: row.get(1)?,
                 master_pubkey: row.get(2)?,
+                ivk_commitment: row.get(3)?,
+                registration_attestation: row.get(4)?,
             })
         })?;
         rows.next().transpose().map_err(StoreError::from)
+    }
+
+    /// The stored argon2 password hash for a user, if any.
+    pub fn password_hash(&self, username: &str) -> Result<Option<String>, StoreError> {
+        let guard = self.lock()?;
+        let hash: Option<String> = guard
+            .query_row(
+                "SELECT password_hash FROM users WHERE username = ?1",
+                params![username],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(hash)
+    }
+
+    /// Pin a sender as trusted for a user (client-verified attestation).
+    pub fn keyring_set_trusted(
+        &self,
+        user_id: i64,
+        sender_mailbox: &str,
+        sender_pubkey: &str,
+        attestation: &[u8],
+    ) -> Result<(), StoreError> {
+        let now = now_secs();
+        let guard = self.lock()?;
+        guard.execute(
+            "INSERT INTO keyring_entries
+             (user_id, sender_mailbox, sender_pubkey, attestation, state, first_seen)
+             VALUES (?1, ?2, ?3, ?4, 'trusted', ?5)
+             ON CONFLICT(user_id, sender_mailbox) DO UPDATE SET
+               sender_pubkey = excluded.sender_pubkey,
+               attestation = excluded.attestation,
+               state = 'trusted'",
+            params![user_id, sender_mailbox, sender_pubkey, attestation, now],
+        )?;
+        Ok(())
+    }
+
+    /// The pinned sender key for a user, if any.
+    pub fn keyring_sender_key(
+        &self,
+        user_id: i64,
+        sender_mailbox: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let guard = self.lock()?;
+        let key: Option<String> = guard
+            .query_row(
+                "SELECT sender_pubkey FROM keyring_entries
+                 WHERE user_id = ?1 AND sender_mailbox = ?2 AND state = 'trusted'",
+                params![user_id, sender_mailbox],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(key)
     }
 
     fn mailbox_row(&self, user_id: i64) -> Result<(i64, u32, i64), StoreError> {
@@ -165,19 +294,22 @@ impl SqliteMailStore {
         let uid = uidnext;
         let internaldate = now_secs();
         let size = msg.body.len() as i64;
+        let sender = msg.sender.clone();
         guard.execute(
             "INSERT INTO messages
-             (mailbox_id, message_id, uid, internaldate, flags, subject, size, body_blob)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (mailbox_id, message_id, uid, internaldate, flags, subject, size, body_blob, sender, trust_state)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 mailbox_id,
-                msg.message_id,
+                &msg.message_id,
                 uid,
                 internaldate,
                 msg.flags.bits(),
-                msg.subject,
+                &msg.subject,
                 size,
-                msg.body,
+                &msg.body,
+                &sender,
+                &msg.trust_state,
             ],
         )?;
         guard.execute(
@@ -193,6 +325,8 @@ impl SqliteMailStore {
             flags: msg.flags,
             subject: msg.subject,
             size: size as u64,
+            sender,
+            trust_state: msg.trust_state,
         })
     }
 
@@ -201,7 +335,7 @@ impl SqliteMailStore {
         let (mailbox_id, uidvalidity, _) = self.mailbox_row(user_id)?;
         let guard = self.lock()?;
         let mut stmt = guard.prepare(
-            "SELECT id, message_id, uid, internaldate, flags, subject, size
+            "SELECT id, message_id, uid, internaldate, flags, subject, size, sender, trust_state
              FROM messages WHERE mailbox_id = ?1
              ORDER BY uid DESC",
         )?;
@@ -253,13 +387,13 @@ impl SqliteMailStore {
         let guard = self.lock()?;
         guard
             .query_row(
-                "SELECT id, message_id, uid, internaldate, flags, subject, size, body_blob
+                "SELECT id, message_id, uid, internaldate, flags, subject, size, sender, trust_state, body_blob
                  FROM messages WHERE mailbox_id = ?1 AND id = ?2",
                 params![mailbox_id, message_id],
                 |row| {
                     Ok(Message {
                         meta: row_to_meta(row, uidvalidity),
-                        body: row.get(7)?,
+                        body: row.get(9)?,
                     })
                 },
             )
@@ -326,6 +460,8 @@ fn row_to_meta(row: &rusqlite::Row<'_>, uidvalidity: u32) -> MessageMeta {
     let flags: u32 = row.get(4).unwrap_or(0);
     let subject: String = row.get(5).unwrap_or_default();
     let size: i64 = row.get(6).unwrap_or(0);
+    let sender: String = row.get(7).unwrap_or_default();
+    let trust_state: String = row.get(8).unwrap_or_else(|_| "unverified".to_string());
     MessageMeta {
         id,
         message_id,
@@ -335,5 +471,7 @@ fn row_to_meta(row: &rusqlite::Row<'_>, uidvalidity: u32) -> MessageMeta {
         flags: MessageFlags::new(flags),
         subject,
         size: size as u64,
+        sender,
+        trust_state,
     }
 }

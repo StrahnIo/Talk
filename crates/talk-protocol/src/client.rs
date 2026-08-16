@@ -164,9 +164,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> ZsmptClient<S> {
         Ok(att)
     }
 
-    /// `INVOICE <message-id> <payload>` + blob — deliver the sealed invoice.
+    /// `INVOICE <sender-user> <message-id> <payload>` + blob — deliver the
+    /// sealed invoice. `sender_username` is the authorizing local user.
     pub async fn send_invoice(
         &mut self,
+        sender_username: &str,
         message_id: &str,
         payload: Payload,
         body: &[u8],
@@ -180,7 +182,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> ZsmptClient<S> {
         };
         write_line(
             &mut self.stream,
-            &format!("INVOICE {message_id} {payload_str}"),
+            &format!("INVOICE {sender_username} {message_id} {payload_str}"),
         )
         .await?;
         write_blob(&mut self.stream, body).await?;

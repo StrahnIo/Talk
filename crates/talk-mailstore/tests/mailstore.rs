@@ -35,12 +35,11 @@ fn append_and_list_messages() {
     let (_dir, store) = test_store();
     let user_id = make_user(&store, "carol");
 
-    let msg = NewMessage {
-        message_id: "abc-1".to_string(),
-        subject: "New sealed invoice".to_string(),
-        body: b"ciphertext-blob".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let msg = NewMessage::invoice(
+        "abc-1".to_string(),
+        "New sealed invoice".to_string(),
+        b"ciphertext-blob".to_vec(),
+    );
     let meta = store.append_message(user_id, msg).expect("append");
     assert_eq!(meta.uid, 1);
     assert_eq!(meta.size, b"ciphertext-blob".len() as u64);
@@ -56,12 +55,7 @@ fn uid_increments_per_mailbox() {
     let (_dir, store) = test_store();
     let user_id = make_user(&store, "dave");
 
-    let mk = |mid: &str| NewMessage {
-        message_id: mid.to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let mk = |mid: &str| NewMessage::invoice(mid.to_string(), "s".to_string(), b"b".to_vec());
 
     let a = store.append_message(user_id, mk("a")).expect("a");
     let b = store.append_message(user_id, mk("b")).expect("b");
@@ -78,12 +72,7 @@ fn duplicate_message_id_rejected() {
     let (_dir, store) = test_store();
     let user_id = make_user(&store, "frank");
 
-    let mk = NewMessage {
-        message_id: "dup".to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let mk = NewMessage::invoice("dup".to_string(), "s".to_string(), b"b".to_vec());
     store.append_message(user_id, mk.clone()).expect("first");
     let err = store.append_message(user_id, mk).unwrap_err();
     assert!(matches!(err, StoreError::DuplicateMessage(_)));
@@ -94,12 +83,7 @@ fn fetch_returns_body() {
     let (_dir, store) = test_store();
     let user_id = make_user(&store, "grace");
 
-    let msg = NewMessage {
-        message_id: "m".to_string(),
-        subject: "s".to_string(),
-        body: b"secret-blob".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let msg = NewMessage::invoice("m".to_string(), "s".to_string(), b"secret-blob".to_vec());
     let meta = store.append_message(user_id, msg).expect("append");
     let fetched = store.fetch_message(user_id, meta.id).expect("fetch");
     assert_eq!(fetched.body, b"secret-blob");
@@ -110,12 +94,7 @@ fn flags_and_expunge() {
     let (_dir, store) = test_store();
     let user_id = make_user(&store, "heidi");
 
-    let msg = NewMessage {
-        message_id: "m".to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let msg = NewMessage::invoice("m".to_string(), "s".to_string(), b"b".to_vec());
     let meta = store.append_message(user_id, msg).expect("append");
 
     store
@@ -140,12 +119,7 @@ fn store_reopen_preserves_data() {
     let store = SqliteMailStore::open(&path).expect("open");
     let user_id = make_user(&store, "ivan");
 
-    let msg = NewMessage {
-        message_id: "m".to_string(),
-        subject: "s".to_string(),
-        body: b"data".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let msg = NewMessage::invoice("m".to_string(), "s".to_string(), b"data".to_vec());
     store.append_message(user_id, msg).expect("append");
     drop(store);
 
@@ -159,12 +133,7 @@ fn users_are_isolated() {
     let alice = make_user(&store, "alice2");
     let bob = make_user(&store, "bob2");
 
-    let mk = |mid: &str| NewMessage {
-        message_id: mid.to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let mk = |mid: &str| NewMessage::invoice(mid.to_string(), "s".to_string(), b"b".to_vec());
     store.append_message(alice, mk("alice-1")).expect("alice");
     store.append_message(bob, mk("bob-1")).expect("bob");
 
@@ -181,12 +150,7 @@ fn list_is_newest_first() {
     let (_dir, store) = test_store();
     let user_id = make_user(&store, "newest");
 
-    let mk = |mid: &str| NewMessage {
-        message_id: mid.to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let mk = |mid: &str| NewMessage::invoice(mid.to_string(), "s".to_string(), b"b".to_vec());
     store.append_message(user_id, mk("first")).expect("first");
     store.append_message(user_id, mk("second")).expect("second");
 
@@ -200,12 +164,7 @@ fn uid_continues_after_delete() {
     let (_dir, store) = test_store();
     let user_id = make_user(&store, "uidcont");
 
-    let mk = |mid: &str| NewMessage {
-        message_id: mid.to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let mk = |mid: &str| NewMessage::invoice(mid.to_string(), "s".to_string(), b"b".to_vec());
     let first = store.append_message(user_id, mk("a")).expect("a");
     store
         .set_flags(user_id, first.id, MessageFlags::DELETED, true)
@@ -221,12 +180,7 @@ fn uid_validity_stable_for_user() {
     let (_dir, store) = test_store();
     let user_id = make_user(&store, "uidval");
 
-    let mk = |mid: &str| NewMessage {
-        message_id: mid.to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let mk = |mid: &str| NewMessage::invoice(mid.to_string(), "s".to_string(), b"b".to_vec());
     let a = store.append_message(user_id, mk("a")).expect("a");
     let b = store.append_message(user_id, mk("b")).expect("b");
     assert_eq!(a.uidvalidity, b.uidvalidity);
@@ -235,12 +189,7 @@ fn uid_validity_stable_for_user() {
 #[test]
 fn unknown_user_append_fails() {
     let (_dir, store) = test_store();
-    let mk = NewMessage {
-        message_id: "x".to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let mk = NewMessage::invoice("x".to_string(), "s".to_string(), b"b".to_vec());
     assert!(store.append_message(999, mk).is_err());
 }
 
@@ -273,12 +222,7 @@ fn message_id_unique_across_users() {
     let alice = make_user(&store, "dup-a");
     let bob = make_user(&store, "dup-b");
 
-    let mk = NewMessage {
-        message_id: "shared-id".to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let mk = NewMessage::invoice("shared-id".to_string(), "s".to_string(), b"b".to_vec());
     // The same message_id is allowed across different users' mailboxes.
     store.append_message(alice, mk.clone()).expect("alice");
     store.append_message(bob, mk).expect("bob");
@@ -288,12 +232,7 @@ fn message_id_unique_across_users() {
 fn flags_mask_operations() {
     let (_dir, store) = test_store();
     let user_id = make_user(&store, "flags");
-    let mk = NewMessage {
-        message_id: "m".to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let mk = NewMessage::invoice("m".to_string(), "s".to_string(), b"b".to_vec());
     let meta = store.append_message(user_id, mk).expect("append");
 
     store
@@ -319,12 +258,7 @@ fn expunge_returns_sorted_uids() {
     let (_dir, store) = test_store();
     let user_id = make_user(&store, "sorted");
 
-    let mk = |mid: &str| NewMessage {
-        message_id: mid.to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let mk = |mid: &str| NewMessage::invoice(mid.to_string(), "s".to_string(), b"b".to_vec());
     let a = store.append_message(user_id, mk("a")).expect("a");
     let b = store.append_message(user_id, mk("b")).expect("b");
     store
@@ -343,12 +277,7 @@ fn expunge_keeps_undeleted() {
     let (_dir, store) = test_store();
     let user_id = make_user(&store, "partial");
 
-    let mk = |mid: &str| NewMessage {
-        message_id: mid.to_string(),
-        subject: "s".to_string(),
-        body: b"b".to_vec(),
-        flags: MessageFlags::default(),
-    };
+    let mk = |mid: &str| NewMessage::invoice(mid.to_string(), "s".to_string(), b"b".to_vec());
     let keep = store.append_message(user_id, mk("keep")).expect("keep");
     let del = store.append_message(user_id, mk("del")).expect("del");
     store
@@ -361,4 +290,81 @@ fn expunge_keeps_undeleted() {
     let list = store.list_messages(user_id).expect("list");
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].id, keep.id);
+}
+
+#[test]
+fn message_stores_sender() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "sender-test");
+    let mut msg = NewMessage::invoice("m1", "s", b"b".to_vec());
+    msg.sender = "alice@example.org".to_string();
+    store.append_message(user_id, msg).expect("append");
+    let list = store.list_messages(user_id).expect("list");
+    assert_eq!(list[0].sender, "alice@example.org");
+    assert_eq!(list[0].trust_state, "unverified");
+}
+
+#[test]
+fn keyring_pin_and_lookup() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "kr");
+    // Not pinned yet.
+    assert!(
+        store
+            .keyring_sender_key(user_id, "alice@example.org")
+            .expect("lookup")
+            .is_none()
+    );
+    // Pin.
+    store
+        .keyring_set_trusted(user_id, "alice@example.org", "pubkey-hex", b"attestation")
+        .expect("pin");
+    assert_eq!(
+        store
+            .keyring_sender_key(user_id, "alice@example.org")
+            .expect("lookup")
+            .as_deref(),
+        Some("pubkey-hex")
+    );
+    // Different user's keyring is independent.
+    let other = make_user(&store, "kr2");
+    assert!(
+        store
+            .keyring_sender_key(other, "alice@example.org")
+            .expect("lookup")
+            .is_none()
+    );
+}
+
+#[test]
+fn keyring_pin_updates_existing() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "kr3");
+    store
+        .keyring_set_trusted(user_id, "bob@example.org", "key1", b"att1")
+        .expect("pin1");
+    store
+        .keyring_set_trusted(user_id, "bob@example.org", "key2", b"att2")
+        .expect("pin2");
+    assert_eq!(
+        store
+            .keyring_sender_key(user_id, "bob@example.org")
+            .expect("lookup")
+            .as_deref(),
+        Some("key2"),
+        "re-pin must update the key"
+    );
+}
+
+#[test]
+fn message_trust_state_roundtrip() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "ts");
+    let mut msg = NewMessage::invoice("m1", "s", b"b".to_vec());
+    msg.sender = "alice@example.org".to_string();
+    msg.trust_state = "trusted".to_string();
+    store.append_message(user_id, msg).expect("append");
+    let list = store.list_messages(user_id).expect("list");
+    assert_eq!(list[0].sender, "alice@example.org");
+    assert_eq!(list[0].trust_state, "trusted");
 }

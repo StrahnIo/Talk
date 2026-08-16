@@ -5,9 +5,50 @@ use std::path::Path;
 use std::sync::Arc;
 use talk_imap::server::MailboxEvent;
 use talk_mailstore::{MessageFlags, NewMessage, SqliteMailStore};
-use talk_protocol::{DeliveryOutcome, DeliverySink, Payload};
+use talk_protocol::{DeliveryOutcome, DeliverySink, Keyring, Payload, TrustState, UserDirectory};
 use tokio::sync::broadcast;
 use tracing::warn;
+
+/// Registered-user directory backed by the mailstore. Lets the ZSMTP session
+/// reject unknown recipients with 550.
+pub struct StoreUserDirectory {
+    store: Arc<SqliteMailStore>,
+}
+
+impl StoreUserDirectory {
+    pub fn new(store: Arc<SqliteMailStore>) -> Self {
+        Self { store }
+    }
+}
+
+impl UserDirectory for StoreUserDirectory {
+    fn user_exists(&self, username: &str) -> bool {
+        matches!(self.store.get_user(username), Ok(Some(_)))
+    }
+}
+
+/// Per-user sender keyring backed by the mailstore.
+pub struct StoreKeyring {
+    store: Arc<SqliteMailStore>,
+}
+
+impl StoreKeyring {
+    pub fn new(store: Arc<SqliteMailStore>) -> Self {
+        Self { store }
+    }
+}
+
+impl Keyring for StoreKeyring {
+    fn state(&self, user_id: i64, sender_mailbox: &str) -> TrustState {
+        if sender_mailbox.is_empty() {
+            return TrustState::Unverified;
+        }
+        match self.store.keyring_sender_key(user_id, sender_mailbox) {
+            Ok(Some(_)) => TrustState::Trusted,
+            _ => TrustState::Unverified,
+        }
+    }
+}
 
 /// Load the domain signing key from `data_dir/domainkey`, or create + persist
 /// it on first boot. The public half is what peers verify against (published
@@ -52,7 +93,7 @@ impl StoreDeliverySink {
 impl DeliverySink for StoreDeliverySink {
     fn deliver(
         &self,
-        _sender_server: &str,
+        sender_mailbox: &str,
         message_id: &str,
         recipient_mailbox: &str,
         payload: Payload,
@@ -86,11 +127,18 @@ impl DeliverySink for StoreDeliverySink {
             Payload::Sealed => "New sealed invoice".to_string(),
             Payload::Plaintext => "New invoice".to_string(),
         };
+        // Trust state via the keyring: trusted if pinned, else unverified.
+        let trust_state = StoreKeyring::new(self.store.clone())
+            .state(user.id, sender_mailbox)
+            .as_str()
+            .to_string();
         let msg = NewMessage {
             message_id: message_id.to_string(),
             subject,
             body: body.to_vec(),
             flags: MessageFlags::default(),
+            sender: sender_mailbox.to_string(),
+            trust_state,
         };
 
         match self.store.append_message(user.id, msg) {
@@ -115,5 +163,69 @@ impl DeliverySink for StoreDeliverySink {
         DeliveryOutcome::Accepted {
             message_id: message_id.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use talk_protocol::Payload as P;
+
+    fn store_with_user() -> (tempfile::TempDir, Arc<SqliteMailStore>, i64) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(SqliteMailStore::open(dir.path().join("m.db")).expect("open"));
+        let hash = talk_mailstore::hash_password("pw").expect("hash");
+        let user_id = store
+            .create_user("alice", &hash, &[0u8; 32])
+            .expect("user")
+            .id;
+        (dir, store, user_id)
+    }
+
+    #[test]
+    fn unpinned_sender_is_unverified() {
+        let (_dir, store, user_id) = store_with_user();
+        let sink = StoreDeliverySink::new(store.clone());
+        let outcome = sink.deliver(
+            "bob@example.org",
+            "m1",
+            "alice@example.org",
+            P::Sealed,
+            b"body",
+        );
+        assert!(matches!(outcome, DeliveryOutcome::Accepted { .. }));
+        let list = store.list_messages(user_id).expect("list");
+        assert_eq!(list[0].sender, "bob@example.org");
+        assert_eq!(list[0].trust_state, "unverified");
+    }
+
+    #[test]
+    fn pinned_sender_is_trusted() {
+        let (_dir, store, user_id) = store_with_user();
+        store
+            .keyring_set_trusted(user_id, "bob@example.org", "pubkey", b"att")
+            .expect("pin");
+        let sink = StoreDeliverySink::new(store.clone());
+        let outcome = sink.deliver(
+            "bob@example.org",
+            "m1",
+            "alice@example.org",
+            P::Sealed,
+            b"body",
+        );
+        assert!(matches!(outcome, DeliveryOutcome::Accepted { .. }));
+        let list = store.list_messages(user_id).expect("list");
+        assert_eq!(list[0].trust_state, "trusted");
+    }
+
+    #[test]
+    fn anonymous_sender_is_unverified() {
+        let (_dir, store, user_id) = store_with_user();
+        let sink = StoreDeliverySink::new(store.clone());
+        let outcome = sink.deliver("", "m1", "alice@example.org", P::Sealed, b"body");
+        assert!(matches!(outcome, DeliveryOutcome::Accepted { .. }));
+        let list = store.list_messages(user_id).expect("list");
+        assert_eq!(list[0].sender, "");
+        assert_eq!(list[0].trust_state, "unverified");
     }
 }

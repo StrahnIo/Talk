@@ -18,6 +18,10 @@ zcash_protocol = "0.10.4"
 zcash_client_backend = { version = "0.24.0-rc.7", features = ["lightwalletd-tonic", "sync", "orchard"] }
 zcash_client_sqlite = { version = "0.22.0-rc.8", features = ["orchard"] }
 zcash_keys = "0.16.1"
+talk-mailstore = { path = "../talk-mailstore" }
 
 [build-dependencies]
 tonic-prost-build = "0.14"
+
+[dev-dependencies]
+tempfile = "3"

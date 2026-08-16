@@ -2,24 +2,24 @@ use std::sync::Arc;
 use talk_imap::parse::{CommandReader, ParsedCommand};
 use talk_imap::response;
 use talk_imap::session::{Session, State};
-use talk_mailstore::{MessageFlags, NewMessage, SqliteMailStore};
+use talk_mailstore::{NewMessage, SqliteMailStore};
 
 fn setup() -> (tempfile::TempDir, Arc<SqliteMailStore>, i64) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(SqliteMailStore::open(dir.path().join("mailbox.db")).expect("open"));
+    let hash = talk_mailstore::hash_password("secret").expect("hash");
     let user_id = store
-        .create_user("alice", "hash", &[0u8; 32])
+        .create_user("alice", &hash, &[0u8; 32])
         .expect("create user")
         .id;
     store
         .append_message(
             user_id,
-            NewMessage {
-                message_id: "msg-1".to_string(),
-                subject: "New sealed invoice".to_string(),
-                body: b"ciphertext-blob".to_vec(),
-                flags: MessageFlags::default(),
-            },
+            NewMessage::invoice(
+                "msg-1".to_string(),
+                "New sealed invoice".to_string(),
+                b"ciphertext-blob".to_vec(),
+            ),
         )
         .expect("append");
     (dir, store, user_id)
@@ -31,6 +31,7 @@ fn session_with(store: Arc<SqliteMailStore>) -> Session {
         username: String::new(),
         user_id: 0,
         store,
+        auth_mode: talk_imap::AuthMode::Database,
     }
 }
 

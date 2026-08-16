@@ -32,16 +32,31 @@ pub enum AttestResult {
     Error(String),
 }
 
+/// Outcome of a REGISTER.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegisterResult {
+    Ok,
+    Error(String),
+}
+
 /// What the daemon can do on behalf of a local client.
 pub trait SecureMailboxHandler: Send + Sync {
     fn send(
         &self,
+        sender_username: &str,
         recipient_mailbox: &str,
         message_id: &str,
         payload: Payload,
         body: &[u8],
     ) -> SendResult;
     fn attest(&self, user: &str, mode: crate::attestation::AttestationMode) -> AttestResult;
+    fn register(
+        &self,
+        username: &str,
+        password: &str,
+        pubkey_hex: &str,
+        ivk_hex: Option<&str>,
+    ) -> RegisterResult;
     fn status(&self) -> String;
 }
 
@@ -59,10 +74,12 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
             Ok(l) => l,
             Err(_) => return Ok(()),
         };
-        let mut parts = line.splitn(4, ' ');
+        let mut parts = line.splitn(5, ' ');
         let verb = parts.next().unwrap_or("").to_ascii_uppercase();
         match verb.as_str() {
             "SEND" => {
+                // SEND <sender> <recipient> <message-id> <sealed|plaintext>
+                let sender = parts.next().unwrap_or("");
                 let recipient = parts.next().unwrap_or("");
                 let message_id = parts.next().unwrap_or("");
                 let payload = match parts.next() {
@@ -80,9 +97,30 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
                         continue;
                     }
                 };
-                match handler.send(recipient, message_id, payload, &body) {
+                match handler.send(sender, recipient, message_id, payload, &body) {
                     SendResult::Ok(text) => write_line(&mut stream, &format!("OK {text}")).await?,
                     SendResult::Error(text) => {
+                        write_line(&mut stream, &format!("ERR {text}")).await?
+                    }
+                }
+            }
+            "REGISTER" => {
+                // REGISTER <username> <password> <pubkey-hex> [ivk-hex]
+                let username = parts.next().unwrap_or("");
+                let password = parts.next().unwrap_or("");
+                let pubkey_hex = parts.next().unwrap_or("");
+                let ivk_hex = parts.next();
+                if username.is_empty() || password.is_empty() || pubkey_hex.is_empty() {
+                    write_line(
+                        &mut stream,
+                        "ERR REGISTER requires username, password, and pubkey",
+                    )
+                    .await?;
+                    continue;
+                }
+                match handler.register(username, password, pubkey_hex, ivk_hex) {
+                    RegisterResult::Ok => write_line(&mut stream, "OK registered").await?,
+                    RegisterResult::Error(text) => {
                         write_line(&mut stream, &format!("ERR {text}")).await?
                     }
                 }
@@ -135,8 +173,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureMailboxClient<S> {
         }
     }
 
+    /// `SEND <sender> <recipient> <message-id> <payload>` + blob.
     pub async fn send(
         &mut self,
+        sender: &str,
         recipient: &str,
         message_id: &str,
         payload: Payload,
@@ -148,7 +188,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureMailboxClient<S> {
         };
         write_line(
             &mut self.stream,
-            &format!("SEND {recipient} {message_id} {payload}"),
+            &format!("SEND {sender} {recipient} {message_id} {payload}"),
         )
         .await?;
         write_blob(&mut self.stream, body).await?;
@@ -158,6 +198,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureMailboxClient<S> {
 
     pub async fn status(&mut self) -> Result<String, crate::framing::FramingError> {
         write_line(&mut self.stream, "STATUS").await?;
+        read_line(&mut self.stream).await
+    }
+
+    /// `REGISTER <username> <password> <pubkey-hex> [ivk-hex]`.
+    pub async fn register(
+        &mut self,
+        username: &str,
+        password: &str,
+        pubkey_hex: &str,
+        ivk_hex: Option<&str>,
+    ) -> Result<String, crate::framing::FramingError> {
+        let ivk = ivk_hex.map(|s| format!(" {s}")).unwrap_or_default();
+        write_line(
+            &mut self.stream,
+            &format!("REGISTER {username} {password} {pubkey_hex}{ivk}"),
+        )
+        .await?;
         read_line(&mut self.stream).await
     }
 

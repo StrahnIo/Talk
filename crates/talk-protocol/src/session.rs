@@ -1,6 +1,6 @@
 //! ZSMTP server-side session: state machine over the command vocabulary.
 
-use crate::attestation::{Attestation, AttestationMode, mint_pair};
+use crate::attestation::{Attestation, AttestationMode};
 use crate::codec::{AddrMode, Command};
 use crate::handshake::{Challenge, ChallengeResponse, DomainKey};
 use crate::status::{Status, StatusCode};
@@ -49,6 +49,42 @@ pub trait DeliverySink: Send + Sync {
     ) -> DeliveryOutcome;
 }
 
+/// A directory of registered users. Implemented by the daemon to let the ZSMTP
+/// session resolve (and reject) real recipients, keeping `talk-protocol`
+/// decoupled from the mailstore.
+pub trait UserDirectory: Send + Sync {
+    /// Whether a username is registered on this server.
+    fn user_exists(&self, username: &str) -> bool;
+}
+
+/// Sender trust state for a received message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustState {
+    /// Sender key matches the recipient's keyring.
+    Trusted,
+    /// Sender key present but mismatched, or signature failed.
+    Untrusted,
+    /// No key / no keyring entry.
+    Unverified,
+}
+
+impl TrustState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TrustState::Trusted => "trusted",
+            TrustState::Untrusted => "untrusted",
+            TrustState::Unverified => "unverified",
+        }
+    }
+}
+
+/// A per-user keyring of trusted senders. Implemented by the daemon; the
+/// protocol layer queries it to compute delivery trust states.
+pub trait Keyring: Send + Sync {
+    /// The trust state for a sender in a user's keyring.
+    fn state(&self, user_id: i64, sender_mailbox: &str) -> TrustState;
+}
+
 /// A reply to a client command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
@@ -72,6 +108,10 @@ pub struct ZsmptSession {
     addr_user: Option<String>,
     /// Where delivered invoices go.
     sink: Option<Arc<dyn DeliverySink>>,
+    /// Registered-user directory (for resolving ADDR/INVOICE recipients).
+    directory: Option<Arc<dyn UserDirectory>>,
+    /// Mints addresses for attestation (isolates any IVK).
+    address_provider: Arc<dyn crate::attestation::AddressProvider>,
 }
 
 impl ZsmptSession {
@@ -84,6 +124,8 @@ impl ZsmptSession {
             peer_domain: None,
             addr_user: None,
             sink: None,
+            directory: None,
+            address_provider: Arc::new(crate::attestation::PlaceholderAddressProvider),
         }
     }
 
@@ -101,6 +143,8 @@ impl ZsmptSession {
             peer_domain: None,
             addr_user: None,
             sink: None,
+            directory: None,
+            address_provider: Arc::new(crate::attestation::PlaceholderAddressProvider),
         }
     }
 
@@ -108,6 +152,23 @@ impl ZsmptSession {
     /// storing (used by standalone tests).
     pub fn with_sink(mut self, sink: Arc<dyn DeliverySink>) -> Self {
         self.sink = Some(sink);
+        self
+    }
+
+    /// Attach a registered-user directory. Without one, ADDR accepts any
+    /// username (used by standalone tests).
+    pub fn with_directory(mut self, directory: Arc<dyn UserDirectory>) -> Self {
+        self.directory = Some(directory);
+        self
+    }
+
+    /// Attach an address provider (isolates any IVK). Defaults to the
+    /// placeholder provider.
+    pub fn with_address_provider(
+        mut self,
+        provider: Arc<dyn crate::attestation::AddressProvider>,
+    ) -> Self {
+        self.address_provider = provider;
         self
     }
 
@@ -123,10 +184,11 @@ impl ZsmptSession {
             Command::Auth { challenge } => self.on_auth(challenge),
             Command::Addr { mode, user } => self.on_addr(*mode, user),
             Command::Invoice {
+                sender,
                 message_id,
                 payload,
                 body,
-            } => self.on_invoice(message_id, *payload, body),
+            } => self.on_invoice(sender, message_id, *payload, body),
             Command::Status { .. } => {
                 Err(SessionError::State("unexpected STATUS from client".into()))
             }
@@ -244,21 +306,30 @@ impl ZsmptSession {
                 "ADDR requires a user",
             )));
         }
+        // Reject unknown users when a directory is attached.
+        if let Some(dir) = &self.directory
+            && !dir.user_exists(user)
+        {
+            return Ok(Reply::Status(Status::new(
+                StatusCode::PERM_REJECT,
+                format!("no such user: {user}"),
+            )));
+        }
         self.addr_user = Some(user.to_string());
 
-        // v1: a placeholder (address, pubkey) pair, domain-key signed. Real
-        // shielded-address derivation swaps in without protocol change.
+        // Mint via the address provider (isolates any IVK). The encryption
+        // pubkey is anchored to the registration (R) in the daemon's impl.
         let att_mode = match mode {
             AddrMode::Ephemeral => AttestationMode::Ephemeral,
             AddrMode::Attested => AttestationMode::Attested,
         };
-        let (address, pubkey) = mint_pair(att_mode);
+        let minted = self.address_provider.mint(att_mode);
         let attestation = Attestation::sign(
             &self.domain,
             user,
             att_mode,
-            address,
-            pubkey,
+            minted.address,
+            minted.pubkey,
             &self.domain_key.signing,
         );
         let payload = attestation.to_json().into_bytes();
@@ -270,6 +341,7 @@ impl ZsmptSession {
 
     fn on_invoice(
         &mut self,
+        sender_user: &str,
         message_id: &str,
         payload: crate::envelope::Payload,
         body: &[u8],
@@ -292,7 +364,7 @@ impl ZsmptSession {
                 "INVOICE requires a prior ADDR",
             )));
         };
-        let Some(sender) = self.peer_domain.clone() else {
+        let Some(sender_domain) = self.peer_domain.clone() else {
             return Ok(Reply::Status(Status::new(
                 StatusCode::BAD_SEQUENCE,
                 "INVOICE requires a sender",
@@ -306,7 +378,8 @@ impl ZsmptSession {
             )));
         };
         let mailbox = format!("{recipient_user}@{}", self.domain);
-        match sink.deliver(&sender, message_id, &mailbox, payload, body) {
+        let sender_mailbox = format!("{sender_user}@{sender_domain}");
+        match sink.deliver(&sender_mailbox, message_id, &mailbox, payload, body) {
             DeliveryOutcome::Accepted { message_id } => Ok(Reply::Status(Status::new(
                 StatusCode::OK_QUEUED,
                 format!("accepted into inbox ({message_id})"),
@@ -506,6 +579,7 @@ mod tests {
         .unwrap();
         let reply = s
             .handle(&Command::Invoice {
+                sender: "alice".into(),
                 message_id: "m1".into(),
                 payload: crate::envelope::Payload::Sealed,
                 body: vec![1, 2, 3],
@@ -527,6 +601,7 @@ mod tests {
         .unwrap();
         let reply = s
             .handle(&Command::Invoice {
+                sender: "alice".into(),
                 message_id: "m1".into(),
                 payload: crate::envelope::Payload::Sealed,
                 body: vec![1, 2, 3],
@@ -546,6 +621,7 @@ mod tests {
         let mut s = authenticated_session();
         let reply = s
             .handle(&Command::Invoice {
+                sender: "alice".into(),
                 message_id: "m1".into(),
                 payload: crate::envelope::Payload::Sealed,
                 body: vec![1, 2, 3],
@@ -594,6 +670,7 @@ mod tests {
         })
         .unwrap();
         s.handle(&Command::Invoice {
+            sender: "alice".into(),
             message_id: "m42".into(),
             payload: crate::envelope::Payload::Sealed,
             body: b"blob".to_vec(),
@@ -602,7 +679,7 @@ mod tests {
 
         let calls = sink.0.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "sender.example.com");
+        assert_eq!(calls[0].0, "alice@sender.example.com");
         assert_eq!(calls[0].1, "m42");
         assert_eq!(calls[0].2, "alice@receiver.example.org");
         assert_eq!(calls[0].3, b"blob");
@@ -634,6 +711,7 @@ mod tests {
         .unwrap();
         let reply = s
             .handle(&Command::Invoice {
+                sender: "alice".into(),
                 message_id: "m1".into(),
                 payload: crate::envelope::Payload::Plaintext,
                 body: Vec::new(),
@@ -655,6 +733,7 @@ mod tests {
         .unwrap();
         let reply = s
             .handle(&Command::Invoice {
+                sender: "alice".into(),
                 message_id: String::new(),
                 payload: crate::envelope::Payload::Plaintext,
                 body: Vec::new(),
@@ -829,7 +908,9 @@ mod tests {
         let blob = read_blob(&mut client).await.unwrap();
         assert!(!blob.is_empty()); // attestation JSON
 
-        write_line(&mut client, "INVOICE m42 sealed").await.unwrap();
+        write_line(&mut client, "INVOICE alice m42 sealed")
+            .await
+            .unwrap();
         write_blob(&mut client, b"opaque-body").await.unwrap();
         let line = read_line(&mut client).await.unwrap();
         assert!(line.starts_with("250 accepted into inbox"), "got: {line}");
@@ -854,5 +935,37 @@ mod tests {
         })
         .unwrap();
         s
+    }
+
+    #[test]
+    fn addr_rejects_unknown_user_with_directory() {
+        struct Dir;
+        impl UserDirectory for Dir {
+            fn user_exists(&self, username: &str) -> bool {
+                username == "alice"
+            }
+        }
+
+        let mut s = authenticated_session().with_directory(Arc::new(Dir));
+        // Known user: OK.
+        let reply = s
+            .handle(&Command::Addr {
+                mode: AddrMode::Ephemeral,
+                user: "alice".into(),
+            })
+            .unwrap();
+        assert!(matches!(reply, Reply::StatusWithBlob(st, _) if st.code.is_success()));
+
+        // Unknown user: 550.
+        let reply = s
+            .handle(&Command::Addr {
+                mode: AddrMode::Ephemeral,
+                user: "ghost".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            reply,
+            Reply::Status(Status::new(StatusCode::PERM_REJECT, "no such user: ghost"))
+        );
     }
 }

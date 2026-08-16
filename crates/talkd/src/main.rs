@@ -58,10 +58,16 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     // verify across restarts.
     let domain_key = sink::load_or_create_domain_key(&cfg.general.data_dir)?;
 
+    // Open the mailbox store.
+    let mailbox_db = cfg.general.data_dir.join("mailbox.db");
+    let store = Arc::new(SqliteMailStore::open(&mailbox_db)?);
+    info!(path = %mailbox_db.display(), "mailbox store open");
+
     let handler = std::sync::Arc::new(secure::SecureMailboxService::new(
         &sender_domain,
         &cfg.network.send_endpoint,
         domain_key.clone(),
+        store.clone(),
     ));
     let mailbox_listener = secure_mailbox.to_tokio()?;
     tokio::spawn(async move {
@@ -84,16 +90,17 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     let zsmtp = SocketListener::bind(&cfg.sockets.zsmtp)?;
     info!(path = %zsmtp.local_path().display(), "zsmtp.sock listening");
 
-    // Open the mailbox store.
-    let mailbox_db = cfg.general.data_dir.join("mailbox.db");
-    let store = Arc::new(SqliteMailStore::open(&mailbox_db)?);
-    info!(path = %mailbox_db.display(), "mailbox store open");
-
     // Serve ZSMTP sessions on the zsmtp socket, delivering into the store.
     let zsmtp_listener = zsmtp.to_tokio()?;
     let zsmtp_domain = sender_domain.clone();
 
     let mut imap = ImapServer::new(store.clone(), "talkd");
+    // Set the user auth mode from config.
+    let imap_auth = match cfg.auth.mode {
+        talk_core::config::AuthMode::Database => talk_imap::AuthMode::Database,
+        talk_core::config::AuthMode::LocalAuth => talk_imap::AuthMode::LocalAuth,
+    };
+    imap = imap.with_auth_mode(imap_auth);
     // Enable IMAPS if a cert/key pair is configured (files exist).
     if cfg.tls.cert.exists() && cfg.tls.key.exists() {
         match talk_imap::tls::load_server_config(&cfg.tls.cert, &cfg.tls.key) {
@@ -111,11 +118,14 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     } else {
         info!("no IMAP TLS cert/key configured; listening plaintext");
     }
-    let sink = Arc::new(sink::StoreDeliverySink::new(store).with_events(imap.event_sender()));
+    let sink =
+        Arc::new(sink::StoreDeliverySink::new(store.clone()).with_events(imap.event_sender()));
+    let directory = Arc::new(sink::StoreUserDirectory::new(store.clone()));
     tokio::spawn(zsmtp_server::serve(
         zsmtp_domain,
         domain_key,
         sink,
+        directory,
         zsmtp_listener,
     ));
 

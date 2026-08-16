@@ -15,6 +15,9 @@ imap_listen = "127.0.0.1:1143"
 cert = "/etc/talk/cert.pem"
 key = "/etc/talk/key.pem"
 
+[auth]
+mode = "database"   # or "localauth" (OS user in the zsmtp group)
+
 [mailbox]
 encrypt_db = true
 passphrase = "CHANGE-ME"

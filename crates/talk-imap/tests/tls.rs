@@ -5,7 +5,7 @@ use rcgen::{CertificateParams, KeyPair};
 use std::sync::Arc;
 use talk_imap::server::ImapServer;
 use talk_imap::tls::load_server_config;
-use talk_mailstore::{MessageFlags, NewMessage, SqliteMailStore};
+use talk_mailstore::{NewMessage, SqliteMailStore};
 use tokio::net::TcpListener;
 
 /// Generate a self-signed cert/key pair as PEM bytes.
@@ -23,18 +23,17 @@ async fn boot_tls_server() -> (u16, Arc<SqliteMailStore>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(SqliteMailStore::open(dir.path().join("mailbox.db")).expect("open"));
     let user_id = store
-        .create_user("alice", "hash", &[0u8; 32])
+        .create_user(
+            "alice",
+            &talk_mailstore::hash_password("secret").expect("hash"),
+            &[0u8; 32],
+        )
         .expect("create user")
         .id;
     store
         .append_message(
             user_id,
-            NewMessage {
-                message_id: "msg-1".to_string(),
-                subject: "Hello".to_string(),
-                body: b"body".to_vec(),
-                flags: MessageFlags::default(),
-            },
+            NewMessage::invoice("msg-1".to_string(), "Hello".to_string(), b"body".to_vec()),
         )
         .expect("append");
 
