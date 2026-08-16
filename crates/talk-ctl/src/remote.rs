@@ -2,8 +2,8 @@
 //! falling back to direct domain-key signing / an outbound ZSMTP client when
 //! the daemon is down.
 
-use crate::store::Ctx;
 use crate::CtlError;
+use crate::store::Ctx;
 use std::path::Path;
 use talk_protocol::attestation::{Attestation, AttestationMode, mint_pair};
 use talk_protocol::envelope::Payload;
@@ -32,9 +32,10 @@ async fn attest_async(
     match socket_connect(&ctx).await {
         Ok(stream) => {
             let mut client = SecureMailboxClient::new(stream);
-            let blob = client.attest(user, mode).await.map_err(|e| {
-                CtlError::msg(format!("daemon: {e}"))
-            })?;
+            let blob = client
+                .attest(user, mode)
+                .await
+                .map_err(|e| CtlError::msg(format!("daemon: {e}")))?;
             print_attestation(&blob)
         }
         Err(_) => {
@@ -60,10 +61,13 @@ fn print_attestation(blob: &[u8]) -> Result<(), CtlError> {
         .map_err(|e| CtlError::msg(format!("daemon returned invalid attestation: {e}")))?;
     println!("domain      {}", att.domain);
     println!("user        {}", att.user);
-    println!("mode        {}", match att.mode {
-        AttestationMode::Ephemeral => "ephemeral",
-        AttestationMode::Attested => "attested",
-    });
+    println!(
+        "mode        {}",
+        match att.mode {
+            AttestationMode::Ephemeral => "ephemeral",
+            AttestationMode::Attested => "attested",
+        }
+    );
     println!("address     {}", att.address);
     println!("pubkey      {}", att.pubkey);
     println!("signature   {}", hex::encode(&att.signature));
@@ -84,13 +88,26 @@ pub fn send(
 ) -> Result<(), CtlError> {
     let body = std::fs::read(file)
         .map_err(|e| CtlError::msg(format!("cannot read {}: {e}", file.display())))?;
-    let payload = if plaintext { Payload::Plaintext } else { Payload::Sealed };
-    let message_id = message_id.map(str::to_string).unwrap_or_else(gen_message_id);
+    let payload = if plaintext {
+        Payload::Plaintext
+    } else {
+        Payload::Sealed
+    };
+    let message_id = message_id
+        .map(str::to_string)
+        .unwrap_or_else(gen_message_id);
     if sender.is_empty() {
         return Err(CtlError::msg("sender username is required"));
     }
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(send_async(config_path, sender, recipient, message_id, payload, body))
+    rt.block_on(send_async(
+        config_path,
+        sender,
+        recipient,
+        message_id,
+        payload,
+        body,
+    ))
 }
 
 async fn send_async(
@@ -105,7 +122,9 @@ async fn send_async(
     match socket_connect(&ctx).await {
         Ok(stream) => {
             let mut client = SecureMailboxClient::new(stream);
-            let resp = client.send(sender, recipient, &message_id, payload, &body).await?;
+            let resp = client
+                .send(sender, recipient, &message_id, payload, &body)
+                .await?;
             if resp.starts_with("OK ") {
                 println!("{resp}");
                 Ok(())
@@ -136,15 +155,15 @@ async fn direct_send(
     let receiver_pub = DohDomainKeyResolver::default()
         .resolving_key(&receiver_domain)
         .map_err(|e| CtlError::msg(format!("cannot resolve domain key: {e}")))?;
-    let endpoint = match DohEndpointResolver::default()
-        .resolve_endpoint(&receiver_domain)
-    {
+    let endpoint = match DohEndpointResolver::default().resolve_endpoint(&receiver_domain) {
         Ok(ep) => ep,
         Err(_) => {
             if !ctx.cfg.network.send_endpoint.is_empty() {
                 ctx.cfg.network.send_endpoint.clone()
             } else {
-                return Err(CtlError::msg("cannot resolve endpoint (no SRV, no send_endpoint override)"));
+                return Err(CtlError::msg(
+                    "cannot resolve endpoint (no SRV, no send_endpoint override)",
+                ));
             }
         }
     };
@@ -160,7 +179,10 @@ async fn direct_send(
         payload,
         body,
     };
-    invoice.deliver().await.map_err(|e| CtlError::msg(format!("deliver: {e}")))?;
+    invoice
+        .deliver()
+        .await
+        .map_err(|e| CtlError::msg(format!("deliver: {e}")))?;
     println!("delivered to {recipient}");
     Ok(())
 }

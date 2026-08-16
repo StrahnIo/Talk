@@ -25,8 +25,8 @@ pub use attestation::{
     PlaceholderAddressProvider, RegistrationAttestation,
 };
 pub use client::{
-    ClientError, ClientState, SendInvoice, ZsmptClient, accept_any_cert_client_config,
-    connect_tcp, connect_tcp_tls, connect_unix, send_invoice_over,
+    ClientError, ClientState, SendInvoice, ZsmptClient, accept_any_cert_client_config, connect_tcp,
+    connect_tcp_tls, connect_unix, send_invoice_over,
 };
 pub use dns::{
     DohDomainKeyResolver, DohEndpointResolver, DomainKeyResolver, EndpointResolver, ResolverError,

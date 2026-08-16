@@ -289,7 +289,10 @@ impl SqliteMailStore {
         let guard = self.lock()?;
         guard.execute_batch("BEGIN")?;
         let result = (|| -> Result<(), StoreError> {
-            guard.execute("DELETE FROM keyring_entries WHERE user_id = ?1", params![user.id])?;
+            guard.execute(
+                "DELETE FROM keyring_entries WHERE user_id = ?1",
+                params![user.id],
+            )?;
             guard.execute("DELETE FROM shares WHERE user_id = ?1", params![user.id])?;
             let mailbox_id: Option<i64> = guard
                 .query_row(

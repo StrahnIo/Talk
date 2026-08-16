@@ -15,7 +15,11 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Parser)]
-#[command(name = "talkctl", version, about = "Manage Talk daemon accounts and settings")]
+#[command(
+    name = "talkctl",
+    version,
+    about = "Manage Talk daemon accounts and settings"
+)]
 pub struct Cli {
     /// Path to the daemon TOML config (default: config.toml in the cwd).
     #[arg(short, long)]
@@ -191,6 +195,13 @@ pub fn run(cli: Cli) -> Result<(), CtlError> {
             file,
             plaintext,
             message_id,
-        } => remote::send(config, &sender, &recipient, &file, plaintext, message_id.as_deref()),
+        } => remote::send(
+            config,
+            &sender,
+            &recipient,
+            &file,
+            plaintext,
+            message_id.as_deref(),
+        ),
     }
 }

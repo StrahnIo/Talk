@@ -22,7 +22,10 @@ pub fn run(config_path: Option<&Path>, action: ConfigAction) -> Result<(), CtlEr
         ConfigAction::Show => {
             let mut value = read_toml(&path)?;
             redact(&mut value, "mailbox.passphrase");
-            println!("{}", toml::to_string_pretty(&value).map_err(|e| CtlError::msg(e.to_string()))?);
+            println!(
+                "{}",
+                toml::to_string_pretty(&value).map_err(|e| CtlError::msg(e.to_string()))?
+            );
         }
         ConfigAction::Get { key } => {
             let value = read_toml(&path)?;
@@ -38,9 +41,8 @@ pub fn run(config_path: Option<&Path>, action: ConfigAction) -> Result<(), CtlEr
             let out = toml::to_string_pretty(&root).map_err(|e| CtlError::msg(e.to_string()))?;
             // Validate before writing: unknown keys / bad types / invalid
             // domains must reject the whole change.
-            talk_core::config::Config::parse(&out).map_err(|e| {
-                CtlError::msg(format!("refusing to write invalid config: {e}"))
-            })?;
+            talk_core::config::Config::parse(&out)
+                .map_err(|e| CtlError::msg(format!("refusing to write invalid config: {e}")))?;
             std::fs::write(&path, out).map_err(CtlError::from)?;
             println!("ok: {key} = {value} ({})", path.display());
         }
@@ -53,13 +55,14 @@ pub fn run(config_path: Option<&Path>, action: ConfigAction) -> Result<(), CtlEr
 }
 
 fn resolve_path(config_path: Option<&Path>) -> Result<PathBuf, CtlError> {
-    Ok(config_path.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("config.toml")))
+    Ok(config_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("config.toml")))
 }
 
 fn read_toml(path: &Path) -> Result<toml::Value, CtlError> {
-    let raw = std::fs::read_to_string(path).map_err(|e| {
-        CtlError::msg(format!("cannot read config {}: {e}", path.display()))
-    })?;
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| CtlError::msg(format!("cannot read config {}: {e}", path.display())))?;
     toml::from_str(&raw).map_err(|e| CtlError::msg(format!("malformed config: {e}")))
 }
 

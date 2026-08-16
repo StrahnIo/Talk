@@ -142,8 +142,10 @@ impl Config {
 
     /// Parse and validate configuration from a TOML string.
     pub fn parse(raw: &str) -> Result<Self, ConfigError> {
-        let cfg: Config = toml::from_str(raw)
-            .map_err(|source| ConfigError::Parse { path: PathBuf::new(), source })?;
+        let cfg: Config = toml::from_str(raw).map_err(|source| ConfigError::Parse {
+            path: PathBuf::new(),
+            source,
+        })?;
         cfg.validate()?;
         Ok(cfg)
     }

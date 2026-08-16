@@ -1,8 +1,6 @@
 //! Direct-access account, share, keyring, and settings management.
 
-use crate::{
-    CtlError, KeyringAction, SettingsAction, ShareAction, UserAction,
-};
+use crate::{CtlError, KeyringAction, SettingsAction, ShareAction, UserAction};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use std::path::{Path, PathBuf};
@@ -61,10 +59,20 @@ pub fn status(config_path: Option<&Path>) -> Result<(), CtlError> {
     println!("version        talkd {}", env!("CARGO_PKG_VERSION"));
     println!("domain         {}", ctx.cfg.general.domain);
     println!("data_dir       {}", ctx.cfg.general.data_dir.display());
-    println!("mailbox_db     {}", ctx.cfg.general.data_dir.join("mailbox.db").display());
+    println!(
+        "mailbox_db     {}",
+        ctx.cfg.general.data_dir.join("mailbox.db").display()
+    );
     println!("secure_mailbox {}", ctx.socket_path().display());
     println!("indexer        {}", ctx.cfg.network.indexer_url);
-    println!("send_endpoint  {}", if ctx.cfg.network.send_endpoint.is_empty() { "srv" } else { &ctx.cfg.network.send_endpoint });
+    println!(
+        "send_endpoint  {}",
+        if ctx.cfg.network.send_endpoint.is_empty() {
+            "srv"
+        } else {
+            &ctx.cfg.network.send_endpoint
+        }
+    );
     println!("users          {}", users.len());
     println!("settings       {}", settings.len());
     match domain_key {
@@ -145,7 +153,11 @@ pub fn user_run(config_path: Option<&Path>, action: UserAction) -> Result<(), Ct
                 None => println!("attestation   (none)"),
             }
             let shares = ctx.store.list_shares(user.id)?;
-            println!("shares        {} ({})", shares.len(), shares.iter().filter(|s| !s.revoked).count());
+            println!(
+                "shares        {} ({})",
+                shares.len(),
+                shares.iter().filter(|s| !s.revoked).count()
+            );
             let keyring = ctx.store.list_keyring(user.id)?;
             println!("keyring       {} pinned", keyring.len());
         }
@@ -161,7 +173,8 @@ pub fn user_run(config_path: Option<&Path>, action: UserAction) -> Result<(), Ct
                 .ok_or_else(|| CtlError::msg("--pubkey must be 32 bytes of hex"))?;
             let ivk = match &ivk {
                 Some(h) => {
-                    decode_hex_32(h).ok_or_else(|| CtlError::msg("--ivk must be 32 bytes of hex"))?;
+                    decode_hex_32(h)
+                        .ok_or_else(|| CtlError::msg("--ivk must be 32 bytes of hex"))?;
                     Some(h.clone())
                 }
                 None => None,
@@ -181,7 +194,9 @@ pub fn user_run(config_path: Option<&Path>, action: UserAction) -> Result<(), Ct
                 &domain_key,
             )
             .to_json();
-            let user = ctx.store.create_user_full(&username, &hash, &pubkey_bytes, ivk, Some(r))?;
+            let user = ctx
+                .store
+                .create_user_full(&username, &hash, &pubkey_bytes, ivk, Some(r))?;
             println!("ok: registered {}", user.username);
 
             if shares > 0 {
@@ -259,12 +274,11 @@ fn init_shares(ctx: &Ctx, user_id: i64, n: u32) -> Result<(), CtlError> {
     for (share, wrapper) in shares.iter().zip(set.wrappers.iter()) {
         let id = hex::encode(wrapper.share_id);
         ctx.store.add_share(user_id, &id, &wrapper.wrapped)?;
-        println!(
-            "share id={id} secret={}",
-            hex::encode(share.as_bytes())
-        );
+        println!("share id={id} secret={}", hex::encode(share.as_bytes()));
     }
-    eprintln!("note: share secrets above are app passwords; store them safely. The DK is not stored by the server.");
+    eprintln!(
+        "note: share secrets above are app passwords; store them safely. The DK is not stored by the server."
+    );
     println!("ok: registered {} shares", n);
     Ok(())
 }
@@ -283,8 +297,7 @@ pub fn keyring_run(config_path: Option<&Path>, action: KeyringAction) -> Result<
         } => {
             let user = require_user(&ctx, &username)?;
             let key = pubkey.unwrap_or_default();
-            ctx.store
-                .keyring_set_trusted(user.id, &sender, &key, &[])?;
+            ctx.store.keyring_set_trusted(user.id, &sender, &key, &[])?;
             println!("ok: pinned {sender} for {username}");
         }
         KeyringAction::List { username } => {
@@ -294,7 +307,11 @@ pub fn keyring_run(config_path: Option<&Path>, action: KeyringAction) -> Result<
                     "{:<28} {} pubkey={}",
                     e.sender_mailbox,
                     e.state,
-                    if e.sender_pubkey.is_empty() { "(none)" } else { &e.sender_pubkey }
+                    if e.sender_pubkey.is_empty() {
+                        "(none)"
+                    } else {
+                        &e.sender_pubkey
+                    }
                 );
             }
         }
@@ -311,10 +328,7 @@ pub fn keyring_run(config_path: Option<&Path>, action: KeyringAction) -> Result<
 // helpers
 // ---------------------------------------------------------------------------
 
-fn require_user<'s>(
-    ctx: &'s Ctx,
-    username: &str,
-) -> Result<talk_mailstore::User, CtlError> {
+fn require_user(ctx: &Ctx, username: &str) -> Result<talk_mailstore::User, CtlError> {
     ctx.store
         .get_user(username)?
         .ok_or_else(|| CtlError::msg(format!("no such user: {username}")))

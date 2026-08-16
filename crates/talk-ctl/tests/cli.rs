@@ -57,7 +57,11 @@ wallet_dir = "{d}/wallets"
         ),
     )
     .expect("write config");
-    Setup { _dir: dir, cfg, data }
+    Setup {
+        _dir: dir,
+        cfg,
+        data,
+    }
 }
 
 fn run(args: &[&str]) -> Output {
@@ -76,10 +80,7 @@ fn ok(out: &Output, what: &str) {
 }
 
 fn err_contains(out: &Output, needle: &str, what: &str) {
-    assert!(
-        !out.status.success(),
-        "{what} should have failed"
-    );
+    assert!(!out.status.success(), "{what} should have failed");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains(needle),
@@ -122,7 +123,13 @@ fn config_validate_and_get() {
 #[test]
 fn config_set_roundtrip_and_unknown_key_rejected() {
     let s = setup();
-    let out = run(&[&cfg_flag(&s.cfg), "config", "set", "general.domain", "example.org"]);
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "config",
+        "set",
+        "general.domain",
+        "example.org",
+    ]);
     ok(&out, "config set");
     let out = run(&[&cfg_flag(&s.cfg), "config", "get", "general.domain"]);
     assert_eq!(stdout(&out).trim(), "\"example.org\"");
@@ -132,8 +139,18 @@ fn config_set_roundtrip_and_unknown_key_rejected() {
     err_contains(&out, "unknown key", "config set unknown key");
 
     // Setting an invalid domain is refused and does not corrupt the file.
-    let out = run(&[&cfg_flag(&s.cfg), "config", "set", "general.domain", "bad domain"]);
-    err_contains(&out, "refusing to write invalid config", "config set invalid domain");
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "config",
+        "set",
+        "general.domain",
+        "bad domain",
+    ]);
+    err_contains(
+        &out,
+        "refusing to write invalid config",
+        "config set invalid domain",
+    );
     let out = run(&[&cfg_flag(&s.cfg), "config", "get", "general.domain"]);
     assert_eq!(stdout(&out).trim(), "\"example.org\"");
 }
@@ -141,7 +158,16 @@ fn config_set_roundtrip_and_unknown_key_rejected() {
 #[test]
 fn user_lifecycle() {
     let s = setup();
-    let out = run(&[&cfg_flag(&s.cfg), "user", "create", "alice", "--password", "s3cret", "--pubkey", PUBKEY]);
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "user",
+        "create",
+        "alice",
+        "--password",
+        "s3cret",
+        "--pubkey",
+        PUBKEY,
+    ]);
     ok(&out, "user create");
     assert!(stdout(&out).contains("ok: registered alice"));
 
@@ -165,27 +191,60 @@ fn user_lifecycle() {
 #[test]
 fn user_create_rejects_bad_pubkey_and_missing_domain_key() {
     let s = setup();
-    let out = run(&[&cfg_flag(&s.cfg), "user", "create", "bob", "--password", "pw", "--pubkey", "nope"]);
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "user",
+        "create",
+        "bob",
+        "--password",
+        "pw",
+        "--pubkey",
+        "nope",
+    ]);
     err_contains(&out, "32 bytes of hex", "bad pubkey");
 
     // Remove the domain key: create must refuse (R cannot be signed).
     std::fs::remove_file(s.data.join("domainkey")).expect("remove domainkey");
-    let out = run(&[&cfg_flag(&s.cfg), "user", "create", "bob", "--password", "pw", "--pubkey", PUBKEY]);
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "user",
+        "create",
+        "bob",
+        "--password",
+        "pw",
+        "--pubkey",
+        PUBKEY,
+    ]);
     err_contains(&out, "domain key", "missing domain key");
 }
 
 #[test]
 fn shares_init_list_revoke() {
     let s = setup();
-    run(&[&cfg_flag(&s.cfg), "user", "create", "carol", "--password", "pw", "--pubkey", PUBKEY]);
+    run(&[
+        &cfg_flag(&s.cfg),
+        "user",
+        "create",
+        "carol",
+        "--password",
+        "pw",
+        "--pubkey",
+        PUBKEY,
+    ]);
     let out = run(&[&cfg_flag(&s.cfg), "share", "init", "carol", "--shares", "3"]);
     ok(&out, "share init");
     let text = stdout(&out);
     assert!(text.contains("ok: registered 3 shares"));
     // Each share line prints its secret once.
-    let share_ids: Vec<&str> = text.lines().filter(|l| l.starts_with("share id=")).map(|l| {
-        l.split(' ').find_map(|tok| tok.strip_prefix("id=")).unwrap()
-    }).collect();
+    let share_ids: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("share id="))
+        .map(|l| {
+            l.split(' ')
+                .find_map(|tok| tok.strip_prefix("id="))
+                .unwrap()
+        })
+        .collect();
     assert_eq!(share_ids.len(), 3);
 
     let out = run(&[&cfg_flag(&s.cfg), "share", "list", "carol"]);
@@ -204,13 +263,36 @@ fn shares_init_list_revoke() {
 #[test]
 fn keyring_pin_list_unpin() {
     let s = setup();
-    run(&[&cfg_flag(&s.cfg), "user", "create", "dave", "--password", "pw", "--pubkey", PUBKEY]);
-    let out = run(&[&cfg_flag(&s.cfg), "keyring", "pin", "dave", "bob@example.org", "--pubkey", "aabb"]);
+    run(&[
+        &cfg_flag(&s.cfg),
+        "user",
+        "create",
+        "dave",
+        "--password",
+        "pw",
+        "--pubkey",
+        PUBKEY,
+    ]);
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "keyring",
+        "pin",
+        "dave",
+        "bob@example.org",
+        "--pubkey",
+        "aabb",
+    ]);
     ok(&out, "keyring pin");
     let out = run(&[&cfg_flag(&s.cfg), "keyring", "list", "dave"]);
     ok(&out, "keyring list");
     assert!(stdout(&out).contains("bob@example.org"));
-    let out = run(&[&cfg_flag(&s.cfg), "keyring", "unpin", "dave", "bob@example.org"]);
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "keyring",
+        "unpin",
+        "dave",
+        "bob@example.org",
+    ]);
     ok(&out, "keyring unpin");
     let out = run(&[&cfg_flag(&s.cfg), "keyring", "list", "dave"]);
     assert!(stdout(&out).lines().count() == 0);
@@ -234,7 +316,16 @@ fn settings_crud() {
 #[test]
 fn attest_direct_when_daemon_down() {
     let s = setup();
-    run(&[&cfg_flag(&s.cfg), "user", "create", "erin", "--password", "pw", "--pubkey", PUBKEY]);
+    run(&[
+        &cfg_flag(&s.cfg),
+        "user",
+        "create",
+        "erin",
+        "--password",
+        "pw",
+        "--pubkey",
+        PUBKEY,
+    ]);
     let out = run(&[&cfg_flag(&s.cfg), "attest", "erin", "ephemeral"]);
     ok(&out, "attest");
     let text = stdout(&out);
