@@ -28,3 +28,4 @@ talk-protocol = { path = "../talk-protocol" }
 [dev-dependencies]
 tempfile = "3"
 hex = "0.4"
+async-trait = "0.1"

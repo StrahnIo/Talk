@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Arc, Mutex};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_talkctl")
@@ -603,4 +604,130 @@ fn key_seal_unseal_via_stdin_stdout() {
     );
     ok(&unseal, "unseal stdout");
     assert_eq!(unseal.stdout, b"piped data");
+}
+
+struct MockHandler(Arc<Mutex<Vec<(String, talk_protocol::emulate::EmulatePayload)>>>);
+
+#[async_trait::async_trait]
+impl talk_protocol::mailbox::AsyncSecureMailboxHandler for MockHandler {
+    async fn send(
+        &self,
+        _s: &str,
+        _r: &str,
+        _m: &str,
+        _p: talk_protocol::envelope::Payload,
+        _b: &[u8],
+    ) -> talk_protocol::mailbox::SendResult {
+        talk_protocol::mailbox::SendResult::Ok("delivered".to_string())
+    }
+    fn attest(
+        &self,
+        _u: &str,
+        _m: talk_protocol::attestation::AttestationMode,
+    ) -> talk_protocol::mailbox::AttestResult {
+        talk_protocol::mailbox::AttestResult::Ok(Vec::new())
+    }
+    fn register(
+        &self,
+        _u: &str,
+        _p: &str,
+        _k: &str,
+        _i: Option<&str>,
+    ) -> talk_protocol::mailbox::RegisterResult {
+        talk_protocol::mailbox::RegisterResult::Ok
+    }
+    fn status(&self) -> String {
+        "mock".to_string()
+    }
+    fn emulate(
+        &self,
+        recipient_user: &str,
+        payload: &talk_protocol::emulate::EmulatePayload,
+    ) -> talk_protocol::mailbox::EmulateResult {
+        self.0
+            .lock()
+            .unwrap()
+            .push((recipient_user.to_string(), payload.clone()));
+        talk_protocol::mailbox::EmulateResult::Ok(format!("delivered to {recipient_user}"))
+    }
+}
+
+#[test]
+fn emulate_payment_reaches_daemon_socket() {
+    use std::os::unix::net::UnixListener;
+    use std::sync::Mutex;
+
+    let s = setup();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let sock_path = s.data.join("run/secure.sock");
+    std::fs::create_dir_all(sock_path.parent().unwrap()).expect("mkdir run");
+
+    let path = sock_path.clone();
+    let cap = captured.clone();
+    std::thread::spawn(move || {
+        let listener = UnixListener::bind(&path).expect("bind socket");
+        let (stream, _) = listener.accept().expect("accept");
+        stream.set_nonblocking(true).expect("nonblocking");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(async move {
+            let stream = tokio::net::UnixStream::from_std(stream).expect("tokio stream");
+            let mut stream = stream;
+            let handler = MockHandler(cap);
+            let _ = talk_protocol::mailbox::serve(&mut stream, &handler).await;
+        });
+    });
+
+    let invoice = s.data.join("inv.txt");
+    std::fs::write(&invoice, b"line one\nline two").expect("invoice");
+
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "emulate",
+        "payment",
+        "alice",
+        "--from-name",
+        "Alice Smith",
+        "--from-address",
+        "t1abc123",
+        "--amount",
+        "1.5",
+        "--invoice",
+        invoice.to_str().unwrap(),
+    ]);
+    ok(&out, "emulate");
+    assert!(
+        stdout(&out).contains("OK delivered to alice"),
+        "{}",
+        stdout(&out)
+    );
+
+    let got = captured.lock().unwrap().clone();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].0, "alice");
+    assert_eq!(got[0].1.sender_name, "Alice Smith");
+    assert_eq!(got[0].1.sender_address, "t1abc123");
+    assert_eq!(got[0].1.amount, "1.5");
+    assert_eq!(got[0].1.invoice, b"line one\nline two");
+}
+
+#[test]
+fn emulate_fails_when_daemon_down() {
+    let s = setup();
+    let invoice = s.data.join("inv.txt");
+    std::fs::write(&invoice, b"hi").expect("invoice");
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "emulate",
+        "payment",
+        "alice",
+        "--from-name",
+        "x",
+        "--from-address",
+        "t1",
+        "--amount",
+        "0.1",
+        "--invoice",
+        invoice.to_str().unwrap(),
+    ]);
+    err_contains(&out, "daemon not running", "emulate with daemon down");
 }

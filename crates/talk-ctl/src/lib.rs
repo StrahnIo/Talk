@@ -69,6 +69,11 @@ pub enum Command {
         #[arg(value_parser = ["ephemeral", "attested"])]
         mode: String,
     },
+    /// Simulate local payments (dev/testing) through the running daemon.
+    Emulate {
+        #[command(subcommand)]
+        action: EmulateAction,
+    },
     /// Deliver an invoice to a recipient mailbox.
     Send {
         sender: String,
@@ -94,6 +99,27 @@ pub enum SettingsAction {
     Set { key: String, value: String },
     /// Delete one setting.
     Delete { key: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EmulateAction {
+    /// Simulate a received transparent payment for a local user.
+    Payment {
+        /// The local recipient's username.
+        recipient: String,
+        /// Sender display name (may contain spaces).
+        #[arg(long)]
+        from_name: String,
+        /// Sender transparent address.
+        #[arg(long)]
+        from_address: String,
+        /// Amount as a decimal ZEC string.
+        #[arg(long)]
+        amount: String,
+        /// ASCII invoice file.
+        #[arg(long)]
+        invoice: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -196,6 +222,22 @@ pub fn run(cli: Cli) -> Result<(), CtlError> {
         Command::Keyring { action } => store::keyring_run(config, action),
         Command::Key { action } => key::run(action),
         Command::Attest { user, mode } => remote::attest(config, &user, &mode),
+        Command::Emulate { action } => match action {
+            EmulateAction::Payment {
+                recipient,
+                from_name,
+                from_address,
+                amount,
+                invoice,
+            } => remote::emulate(
+                config,
+                &recipient,
+                &from_name,
+                &from_address,
+                &amount,
+                &invoice,
+            ),
+        },
         Command::Send {
             sender,
             recipient,

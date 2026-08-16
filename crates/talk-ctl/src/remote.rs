@@ -188,6 +188,59 @@ async fn direct_send(
 }
 
 // ---------------------------------------------------------------------------
+// emulate (daemon-required: the daemon owns the delivery sink + broadcast)
+// ---------------------------------------------------------------------------
+
+pub fn emulate(
+    config_path: Option<&Path>,
+    recipient: &str,
+    from_name: &str,
+    from_address: &str,
+    amount: &str,
+    invoice_file: &Path,
+) -> Result<(), CtlError> {
+    let invoice = std::fs::read(invoice_file).map_err(|e| {
+        CtlError::msg(format!("cannot read {}: {e}", invoice_file.display()))
+    })?;
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(emulate_async(
+        config_path,
+        recipient,
+        from_name,
+        from_address,
+        amount,
+        invoice,
+    ))
+}
+
+async fn emulate_async(
+    config_path: Option<&Path>,
+    recipient: &str,
+    from_name: &str,
+    from_address: &str,
+    amount: &str,
+    invoice: Vec<u8>,
+) -> Result<(), CtlError> {
+    let ctx = Ctx::load(config_path)?;
+    // Emulation is daemon-owned (rendering + delivery sink + IMAP IDLE push),
+    // so the socket must be up — there is no direct fallback.
+    let stream = socket_connect(&ctx)
+        .await
+        .map_err(|e| CtlError::msg(format!("daemon not running: {e}")))?;
+    let mut client = SecureMailboxClient::new(stream);
+    let reply = client
+        .emulate(recipient, from_name, from_address, amount, &invoice)
+        .await
+        .map_err(|e| CtlError::msg(format!("daemon: {e}")))?;
+    if reply.starts_with("OK ") {
+        println!("{reply}");
+        Ok(())
+    } else {
+        Err(CtlError::msg(format!("daemon: {reply}")))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
