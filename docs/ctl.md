@@ -20,6 +20,18 @@ Two classes of commands, with different availability:
   `secure_mailbox.sock` (single DB writer, daemon-side handling). If the daemon
   is down, they fall back to direct operation: `attest` signs with the
   persisted domain key, `send` uses an outbound ZSMTP client.
+- **Daemon-required.** `emulate payment` has no direct fallback: rendering and
+  the inbox delivery (with IMAP IDLE push) are owned by the daemon's delivery
+  sink, so `talkd` must be running.
+
+## Templates
+
+`emulate payment` renders a Tera template spec — a `subject` and a `body`
+template — from the context `{sender_name, sender_address, amount, invoice,
+received_at}`. The spec resolves in order: `[mailbox] template_path` in the
+daemon config (if set; the file must exist), else `<data_dir>/template.toml`,
+else the built-in default. See `template.toml` in the repository root for an
+example.
 
 ## Setup
 
@@ -61,6 +73,7 @@ talkctl --config /path/to/config.toml <command>
 | `key unseal --key <file> [--in <file>] [--out <file>]` | Decrypt a sealed envelope with the private key |
 | `attest <user> <ephemeral\|attested>` | Request an address attestation (socket → direct fallback) |
 | `send <sender> <recipient> <file> [--plaintext] [--message-id <id>]` | Deliver an invoice (socket → direct fallback) |
+| `emulate payment <user> --from-name ... --from-address ... --amount ... --invoice <file>` | Simulate a received payment through the daemon: Tera-rendered (subject+body) into the inbox via the normal delivery path (daemon required) |
 
 ## Security notes
 

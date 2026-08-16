@@ -250,6 +250,36 @@ talkctl [OPTIONS] key unseal --key <PRIVKEY-FILE> [--in <FILE>] [--out <FILE>]
 :   Decrypt a `TKS1` envelope with the private key. A wrong key or corrupted
     envelope fails with a clear `unseal failed` error.
 
+### emulate
+
+Simulate local payments for development and testing. This is a local-only
+emulation of a received transparent transaction: the daemon renders a Tera
+template (subject + body) from the supplied sender name/address, amount, and an
+ASCII invoice file, then delivers the result into the recipient's INBOX through
+the normal delivery path — so IMAP IDLE sessions are notified exactly like a
+real delivery. The message is stored with `trust_state = unverified`.
+
+```
+talkctl [OPTIONS] emulate payment <RECIPIENT-USER> --from-name <NAME>
+                       --from-address <TADDR> --amount <AMOUNT>
+                       --invoice <FILE>
+```
+
+`emulate payment <RECIPIENT-USER> --from-name <NAME> --from-address <TADDR>
+--amount <AMOUNT> --invoice <FILE>`
+:   Simulate a received payment for a local user. `--from-name` is the sender's
+    display name (may contain spaces), `--from-address` a transparent address,
+    `--amount` a decimal ZEC string, and `--invoice` an ASCII invoice file read
+    into the template's `invoice` context. **The daemon must be running**: the
+    render + delivery sink + IDLE broadcast are daemon-owned, so there is no
+    direct fallback.
+
+The rendered subject and body come from the configured Tera template — the
+built-in default, `<data_dir>/template.toml`, or `[mailbox] template_path` in
+the daemon config (see `template.toml` in the repository root for an example).
+Templates receive the context: `sender_name`, `sender_address`, `amount`,
+`invoice`, `received_at`.
+
 ### attest
 
 ```
@@ -415,6 +445,14 @@ Deliver an invoice:
 
 ```
 talkctl send alice bob@example.org invoice.bin
+```
+
+Simulate a received payment into alice's INBOX (daemon running):
+
+```
+printf 'Thanks for the payment!\n' > invoice.txt
+talkctl emulate payment alice --from-name "Alice Smith" --from-address t1abc123 \
+    --amount 1.5 --invoice invoice.txt
 ```
 
 ## SEE ALSO

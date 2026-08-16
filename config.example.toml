@@ -82,3 +82,9 @@ passphrase = "CHANGE-ME"
 
 # Directory of per-user wallet databases (`<user_id>/wallet.db`).
 wallet_dir = "/var/lib/talk/wallets"
+
+# Optional message-template override: a `template.toml` file with an `[invoice]`
+# section containing `subject` and `body` Tera templates. When unset, the
+# daemon looks for `<data_dir>/template.toml`, then falls back to a built-in
+# default. See template.toml in the repo root for an example.
+# template_path = "/etc/talk/template.toml"

@@ -1,0 +1,16 @@
+# Message templates (Tera syntax).
+#
+# Drop this file at <data_dir>/template.toml (or point [mailbox] template_path
+# at it) to override the built-in default for local payment emulation. Context
+# variables available to every template:
+#   sender_name, sender_address, amount, invoice, received_at
+
+[invoice]
+subject = "Invoice from {{ sender_name }}"
+body = """From:     {{ sender_name }}
+Address:  {{ sender_address }}
+Amount:   {{ amount }} ZEC
+Received: {{ received_at }}
+
+{{ invoice }}
+"""
