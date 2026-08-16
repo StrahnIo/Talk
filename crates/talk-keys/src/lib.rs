@@ -13,7 +13,7 @@ pub mod share;
 
 pub use dk::DataKey;
 pub use master::{
-    MasterKeyPair, SealError, generate_master_pair, master_public_from_bytes, master_pubkey,
+    MasterKeyPair, SealError, generate_master_pair, master_pubkey, master_public_from_bytes,
     open_envelope, seal_envelope,
 };
 pub use resolver::{Credential, KeyResolver, MasterKeyResolver, ShareResolver, WrappedByMaster};

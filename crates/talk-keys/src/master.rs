@@ -198,7 +198,10 @@ mod tests {
     #[test]
     fn bad_magic_and_short_rejected() {
         let pair = generate_master_pair();
-        assert_eq!(open_envelope(&pair.private, b"nope"), Err(SealError::TooShort));
+        assert_eq!(
+            open_envelope(&pair.private, b"nope"),
+            Err(SealError::TooShort)
+        );
         let mut rng = rand::thread_rng();
         let mut envelope = seal_envelope(&pair.public, b"data", &mut rng);
         envelope[0] = b'X';

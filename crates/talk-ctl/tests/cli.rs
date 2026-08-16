@@ -379,11 +379,7 @@ fn key_generate_to_file_and_pubkey_matches() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&priv_file)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
+        let mode = std::fs::metadata(&priv_file).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "private key must be mode 0600");
     }
 
@@ -525,7 +521,13 @@ fn key_seal_to_explicit_pub_and_wrong_key_fails() {
         "generate b",
     );
 
-    let out = run(&[&cfg_flag(&s.cfg), "key", "pubkey", "--key", priv_key.to_str().unwrap()]);
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "key",
+        "pubkey",
+        "--key",
+        priv_key.to_str().unwrap(),
+    ]);
     let pub_hex = stdout(&out).trim().to_string();
 
     // Seal to the explicit public key, decrypt with the matching private key.
@@ -579,7 +581,13 @@ fn key_seal_unseal_via_stdin_stdout() {
 
     // echo "..." | seal | unseal == "..."
     let seal = run_with_stdin(
-        &[&cfg_flag(&s.cfg), "key", "seal", "--key", priv_file.to_str().unwrap()],
+        &[
+            &cfg_flag(&s.cfg),
+            "key",
+            "seal",
+            "--key",
+            priv_file.to_str().unwrap(),
+        ],
         b"piped data",
     );
     ok(&seal, "seal stdin");
