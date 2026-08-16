@@ -8,6 +8,12 @@
 # live under here.
 data_dir = "/var/lib/talk"
 
+# This daemon's ZSMTP domain — its public identity. Used in the ZSMTP
+# greeting, the domain-key handshake, INVOICE envelopes (user@<domain>),
+# and registration attestations. Must be a real DNS domain in production
+# (where `_zpayments._tcp.<domain>` records are published). Required.
+domain = "talk.local"
+
 # Log verbosity: "trace" | "debug" | "info" | "warn" | "error".
 log_level = "info"
 

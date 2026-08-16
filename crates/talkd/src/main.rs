@@ -47,12 +47,8 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     info!(path = %secure_mailbox.local_path().display(), "secure_mailbox.sock listening");
 
     // Serve the local user↔daemon interface.
-    let sender_domain = cfg
-        .general
-        .data_dir
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "talkd.local".to_string());
+    let sender_domain = cfg.general.domain.clone();
+    info!(domain = %sender_domain, "sender domain");
 
     // The stable domain signing key. Persisted so DNS-published attestations
     // verify across restarts.
@@ -164,14 +160,29 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
         }
     });
 
-    // UNSAFE_NO_TLS: additionally expose plaintext IMAP on 127.0.0.1:143.
+    // UNSAFE_NO_TLS: additionally expose plaintext IMAP on 127.0.0.1:<port>.
     // For dev / trusted networks only — no TLS, no encryption.
+    // The port defaults to 143 and can be overridden via UNSAFE_IMAP_PORT.
     if std::env::var("UNSAFE_NO_TLS").is_ok() {
+        let port: u16 = match std::env::var("UNSAFE_IMAP_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+        {
+            Some(p) => p,
+            None => {
+                warn!(
+                    invalid = %std::env::var("UNSAFE_IMAP_PORT").unwrap_or_default(),
+                    "UNSAFE_IMAP_PORT invalid; falling back to 143"
+                );
+                143
+            }
+        };
+        let addr = format!("127.0.0.1:{port}");
         let plain_imap = ImapServer::new(store.clone(), "talkd").with_auth_mode(imap_auth);
-        info!("UNSAFE_NO_TLS set: binding plaintext IMAP on 127.0.0.1:143 (INSECURE)");
+        info!(addr = %addr, "UNSAFE_NO_TLS set: binding plaintext IMAP (INSECURE)");
         tokio::spawn(async move {
-            if let Err(e) = plain_imap.listen("127.0.0.1:143").await {
-                error!(error = %e, "plaintext IMAP (143) listener failed");
+            if let Err(e) = plain_imap.listen(&addr).await {
+                error!(error = %e, addr = %addr, "plaintext IMAP listener failed");
             }
         });
     }
