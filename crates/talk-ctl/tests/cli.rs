@@ -239,6 +239,57 @@ fn user_create_rejects_bad_pubkey_and_missing_domain_key() {
 }
 
 #[test]
+fn user_create_rejects_qualified_usernames() {
+    let s = setup();
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "user",
+        "create",
+        "bob@talk.local",
+        "--password",
+        "pw",
+        "--pubkey",
+        PUBKEY,
+    ]);
+    err_contains(&out, "bare local name", "username with @ rejected");
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "user",
+        "create",
+        "bob:app",
+        "--password",
+        "pw",
+        "--pubkey",
+        PUBKEY,
+    ]);
+    err_contains(&out, "app passwords", "username with : rejected");
+}
+
+#[test]
+fn user_lookups_accept_local_domain() {
+    let s = setup();
+    ok(
+        &run(&[
+            &cfg_flag(&s.cfg),
+            "user",
+            "create",
+            "carol",
+            "--password",
+            "pw",
+            "--pubkey",
+            PUBKEY,
+        ]),
+        "create carol",
+    );
+    let out = run(&[&cfg_flag(&s.cfg), "user", "show", "carol@talk.local"]);
+    ok(&out, "user show carol@talk.local");
+    assert!(stdout(&out).contains("username      carol"));
+
+    let out = run(&[&cfg_flag(&s.cfg), "user", "show", "carol@evil.org"]);
+    err_contains(&out, "no such user", "foreign domain rejected");
+}
+
+#[test]
 fn shares_init_list_revoke() {
     let s = setup();
     run(&[
