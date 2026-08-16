@@ -1,4 +1,7 @@
-use crate::{Message, MessageFlags, MessageMeta, NewMessage, StoreError, User, now_secs};
+use crate::{
+    KeyringEntry, Message, MessageFlags, MessageMeta, NewMessage, ShareEntry, StoreError, User,
+    UserSummary, now_secs,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -99,6 +102,11 @@ impl SqliteMailStore {
                 ON messages (mailbox_id, uid);
             CREATE INDEX IF NOT EXISTS idx_messages_mailbox_flags
                 ON messages (mailbox_id, flags);
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             "#,
         )?;
         // Migrations for columns added after the initial schema.
@@ -220,6 +228,96 @@ impl SqliteMailStore {
             )
             .optional()?;
         Ok(hash)
+    }
+
+    /// List all users (id, username, created_at, ivk/attestation presence).
+    pub fn list_users(&self) -> Result<Vec<UserSummary>, StoreError> {
+        let guard = self.lock()?;
+        let mut stmt = guard.prepare(
+            "SELECT id, username, created_at,
+                    ivk_commitment IS NOT NULL,
+                    registration_attestation IS NOT NULL
+             FROM users ORDER BY username",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(UserSummary {
+                    id: row.get(0)?,
+                    username: row.get(1)?,
+                    created_at: row.get(2)?,
+                    has_ivk: row.get::<_, i64>(3)? != 0,
+                    has_attestation: row.get::<_, i64>(4)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Replace a user's password hash (password change).
+    pub fn set_password(&self, username: &str, password_hash: &str) -> Result<(), StoreError> {
+        let guard = self.lock()?;
+        let n = guard.execute(
+            "UPDATE users SET password_hash = ?1 WHERE username = ?2",
+            params![password_hash, username],
+        )?;
+        if n == 0 {
+            return Err(StoreError::UserNotFound(username.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Set (or clear, with `None`) a user's IVK commitment.
+    pub fn set_ivk(&self, username: &str, ivk_commitment: Option<&str>) -> Result<(), StoreError> {
+        let guard = self.lock()?;
+        let n = guard.execute(
+            "UPDATE users SET ivk_commitment = ?1 WHERE username = ?2",
+            params![ivk_commitment, username],
+        )?;
+        if n == 0 {
+            return Err(StoreError::UserNotFound(username.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Delete a user and everything they own (shares, keyring, mailbox,
+    /// messages) in one transaction.
+    pub fn delete_user(&self, username: &str) -> Result<(), StoreError> {
+        let user = match self.get_user(username)? {
+            Some(u) => u,
+            None => return Err(StoreError::UserNotFound(username.to_string())),
+        };
+        let guard = self.lock()?;
+        guard.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(), StoreError> {
+            guard.execute(
+                "DELETE FROM keyring_entries WHERE user_id = ?1",
+                params![user.id],
+            )?;
+            guard.execute("DELETE FROM shares WHERE user_id = ?1", params![user.id])?;
+            let mailbox_id: Option<i64> = guard
+                .query_row(
+                    "SELECT id FROM mailboxes WHERE user_id = ?1",
+                    params![user.id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(mid) = mailbox_id {
+                guard.execute("DELETE FROM messages WHERE mailbox_id = ?1", params![mid])?;
+                guard.execute("DELETE FROM mailboxes WHERE id = ?1", params![mid])?;
+            }
+            guard.execute("DELETE FROM users WHERE id = ?1", params![user.id])?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                guard.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = guard.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     /// Pin a sender as trusted for a user (client-verified attestation).
@@ -378,6 +476,115 @@ impl SqliteMailStore {
              VALUES (?1, ?2, ?3, 0)",
             params![user_id, share_id, wrapped_dk],
         )?;
+        Ok(())
+    }
+
+    /// List a user's shares, including revoked ones (with their revoked state).
+    pub fn list_shares(&self, user_id: i64) -> Result<Vec<ShareEntry>, StoreError> {
+        let guard = self.lock()?;
+        let mut stmt = guard.prepare(
+            "SELECT share_id, wrapped_dk, revoked FROM shares WHERE user_id = ?1 ORDER BY share_id",
+        )?;
+        let rows = stmt
+            .query_map(params![user_id], |row| {
+                Ok(ShareEntry {
+                    share_id: row.get(0)?,
+                    wrapped_dk: row.get(1)?,
+                    revoked: row.get::<_, i64>(2)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Revoke a share: mark its wrapper revoked. The wrapped DK stays in the
+    /// row (dropped on next re-wrap, a client-side operation).
+    pub fn revoke_share(&self, user_id: i64, share_id: &str) -> Result<(), StoreError> {
+        let guard = self.lock()?;
+        let n = guard.execute(
+            "UPDATE shares SET revoked = 1 WHERE user_id = ?1 AND share_id = ?2",
+            params![user_id, share_id],
+        )?;
+        if n == 0 {
+            return Err(StoreError::UserNotFound(share_id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// List a user's keyring entries (pinned senders).
+    pub fn list_keyring(&self, user_id: i64) -> Result<Vec<KeyringEntry>, StoreError> {
+        let guard = self.lock()?;
+        let mut stmt = guard.prepare(
+            "SELECT sender_mailbox, sender_pubkey, state, first_seen
+             FROM keyring_entries WHERE user_id = ?1 ORDER BY first_seen",
+        )?;
+        let rows = stmt
+            .query_map(params![user_id], |row| {
+                Ok(KeyringEntry {
+                    sender_mailbox: row.get(0)?,
+                    sender_pubkey: row.get(1)?,
+                    state: row.get(2)?,
+                    first_seen: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Remove a pinned sender from a user's keyring.
+    pub fn unpin_keyring(&self, user_id: i64, sender_mailbox: &str) -> Result<(), StoreError> {
+        let guard = self.lock()?;
+        let n = guard.execute(
+            "DELETE FROM keyring_entries WHERE user_id = ?1 AND sender_mailbox = ?2",
+            params![user_id, sender_mailbox],
+        )?;
+        if n == 0 {
+            return Err(StoreError::UserNotFound(sender_mailbox.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Read a server-side setting (`None` if unset).
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
+        let guard = self.lock()?;
+        let value: Option<String> = guard
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value)
+    }
+
+    /// Set a server-side setting (upsert).
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        let guard = self.lock()?;
+        guard.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// All server-side settings, sorted by key.
+    pub fn list_settings(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let guard = self.lock()?;
+        let mut stmt = guard.prepare("SELECT key, value FROM settings ORDER BY key")?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Delete a server-side setting.
+    pub fn delete_setting(&self, key: &str) -> Result<(), StoreError> {
+        let guard = self.lock()?;
+        let n = guard.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        if n == 0 {
+            return Err(StoreError::UserNotFound(key.to_string()));
+        }
         Ok(())
     }
 

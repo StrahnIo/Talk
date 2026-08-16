@@ -9,13 +9,16 @@
 //!   the daemon to deliver an invoice to another server.
 //! - `ATTEST <user> <ephemeral|attested>` — request a local address
 //!   attestation.
+//! - `EMULATE <recipient-user>` + blob — simulate a received payment for a
+//!   local user (dev/testing).
 //! - `STATUS` — daemon state.
 //! - `QUIT` — end the session.
 //!
 //! Replies are status lines: `OK <text>` or `ERR <text>`.
 
+use crate::emulate::EmulatePayload;
 use crate::envelope::Payload;
-use crate::framing::{read_line, write_blob, write_line};
+use crate::framing::{read_blob, read_line, write_blob, write_line};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Outcome of a SEND.
@@ -36,6 +39,13 @@ pub enum AttestResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegisterResult {
     Ok,
+    Error(String),
+}
+
+/// Outcome of an EMULATE.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmulateResult {
+    Ok(String),
     Error(String),
 }
 
@@ -84,6 +94,8 @@ pub trait AsyncSecureMailboxHandler: Send + Sync {
         ivk_hex: Option<&str>,
     ) -> RegisterResult;
     fn status(&self) -> String;
+    /// Simulate a received payment for a local user (local emulation only).
+    fn emulate(&self, recipient_user: &str, payload: &EmulatePayload) -> EmulateResult;
 }
 
 /// Run a secure_mailbox session over a stream: read commands until QUIT/EOF.
@@ -91,7 +103,6 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     handler: &dyn AsyncSecureMailboxHandler,
 ) -> Result<(), crate::framing::FramingError> {
-    use crate::framing::read_blob;
     use tokio::io::BufReader;
 
     let mut stream = BufReader::new(stream);
@@ -174,6 +185,36 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
                     }
                 }
             }
+            "EMULATE" => {
+                // EMULATE <recipient-user> + blob (JSON EmulatePayload)
+                let recipient_user = parts.next().unwrap_or("");
+                if recipient_user.is_empty() {
+                    write_line(&mut stream, "ERR EMULATE requires a recipient user").await?;
+                    continue;
+                }
+                let blob = match read_blob(&mut stream).await {
+                    Ok(b) => b,
+                    Err(_) => {
+                        write_line(&mut stream, "ERR missing EMULATE blob").await?;
+                        continue;
+                    }
+                };
+                let payload = match EmulatePayload::from_json(&String::from_utf8_lossy(&blob)) {
+                    Some(p) => p,
+                    None => {
+                        write_line(&mut stream, "ERR malformed EMULATE payload").await?;
+                        continue;
+                    }
+                };
+                match handler.emulate(recipient_user, &payload) {
+                    EmulateResult::Ok(text) => {
+                        write_line(&mut stream, &format!("OK {text}")).await?
+                    }
+                    EmulateResult::Error(text) => {
+                        write_line(&mut stream, &format!("ERR {text}")).await?
+                    }
+                }
+            }
             "STATUS" => {
                 let s = handler.status();
                 write_line(&mut stream, &format!("OK {s}")).await?;
@@ -250,5 +291,48 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureMailboxClient<S> {
     pub async fn quit(&mut self) -> Result<String, crate::framing::FramingError> {
         write_line(&mut self.stream, "QUIT").await?;
         read_line(&mut self.stream).await
+    }
+
+    /// `EMULATE <recipient-user>` + blob — simulate a received payment.
+    pub async fn emulate(
+        &mut self,
+        recipient_user: &str,
+        sender_name: &str,
+        sender_address: &str,
+        amount: &str,
+        invoice: &[u8],
+    ) -> Result<String, crate::framing::FramingError> {
+        let payload = EmulatePayload {
+            sender_name: sender_name.to_string(),
+            sender_address: sender_address.to_string(),
+            amount: amount.to_string(),
+            invoice: invoice.to_vec(),
+        };
+        write_line(&mut self.stream, &format!("EMULATE {recipient_user}")).await?;
+        write_blob(&mut self.stream, payload.to_json().as_bytes()).await?;
+        read_line(&mut self.stream).await
+    }
+
+    /// `ATTEST <user> <ephemeral|attested>` — request an address attestation.
+    /// Returns the signed attestation blob, or the server's `ERR` line.
+    pub async fn attest(
+        &mut self,
+        user: &str,
+        mode: crate::attestation::AttestationMode,
+    ) -> Result<Vec<u8>, String> {
+        let mode = match mode {
+            crate::attestation::AttestationMode::Ephemeral => "ephemeral",
+            crate::attestation::AttestationMode::Attested => "attested",
+        };
+        write_line(&mut self.stream, &format!("ATTEST {user} {mode}"))
+            .await
+            .map_err(|e| e.to_string())?;
+        let line = read_line(&mut self.stream)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !line.starts_with("OK ") {
+            return Err(line);
+        }
+        read_blob(&mut self.stream).await.map_err(|e| e.to_string())
     }
 }

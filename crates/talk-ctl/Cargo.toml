@@ -1,35 +1,31 @@
 [package]
-name = "talkd"
+name = "talk-ctl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "talkd"
+name = "talkctl"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { workspace = true, features = ["net", "sync", "time", "rt", "macros", "signal"] }
+tokio = { workspace = true, features = ["net", "rt", "macros", "io-util", "time"] }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
 toml = { workspace = true }
-async-trait = "0.1"
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = { workspace = true }
-rustls = { workspace = true }
 hex = "0.4"
-sha2 = "0.10"
-time = { workspace = true }
+rand = { workspace = true }
+rpassword = "7"
+thiserror = "2"
 talk-core = { path = "../talk-core" }
-talk-imap = { path = "../talk-imap" }
+talk-keys = { path = "../talk-keys" }
 talk-mailstore = { path = "../talk-mailstore" }
 talk-protocol = { path = "../talk-protocol" }
-talk-wallet = { path = "../talk-wallet" }
 
 [dev-dependencies]
 tempfile = "3"
-rcgen = "0.14"
+hex = "0.4"
+async-trait = "0.1"

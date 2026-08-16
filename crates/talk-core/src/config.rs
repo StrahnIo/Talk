@@ -69,6 +69,11 @@ pub struct Mailbox {
     #[serde(default)]
     pub passphrase: String,
     pub wallet_dir: PathBuf,
+    /// Optional path to a `template.toml` overriding the built-in message
+    /// templates. When unset, `<data_dir>/template.toml` is used if present,
+    /// else the built-in default.
+    #[serde(default)]
+    pub template_path: Option<PathBuf>,
 }
 
 /// How the server authenticates local users.
@@ -132,13 +137,26 @@ impl Config {
             path: path.clone(),
             source,
         })?;
-        let cfg: Config = toml::from_str(&raw).map_err(|source| ConfigError::Parse { path, source })?;
+        let cfg: Config = toml::from_str(&raw).map_err(|source| ConfigError::Parse {
+            path: path.clone(),
+            source,
+        })?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// Parse and validate configuration from a TOML string.
+    pub fn parse(raw: &str) -> Result<Self, ConfigError> {
+        let cfg: Config = toml::from_str(raw).map_err(|source| ConfigError::Parse {
+            path: PathBuf::new(),
+            source,
+        })?;
         cfg.validate()?;
         Ok(cfg)
     }
 
     /// Structural validation beyond what serde enforces.
-    fn validate(&self) -> Result<(), ConfigError> {
+    pub fn validate(&self) -> Result<(), ConfigError> {
         let domain = self.general.domain.trim();
         if domain.is_empty() || domain.chars().any(char::is_whitespace) {
             return Err(ConfigError::InvalidDomain {

@@ -255,6 +255,72 @@ pub async fn connect_tcp_tls(
     ZsmptClient::connect(tls, sender_domain).await
 }
 
+/// Drive the full outbound invoice flow over an established connection:
+/// HELLO → AUTH → ADDR → INVOICE → QUIT.
+///
+/// Shared by the daemon's SEND handler and `talkctl send` so the wire sequence
+/// cannot drift between them.
+pub async fn send_invoice_over<S: AsyncRead + AsyncWrite + Unpin>(
+    mut client: ZsmptClient<S>,
+    sender_username: &str,
+    recipient_user: &str,
+    receiver_pub: &VerifyingKey,
+    message_id: &str,
+    payload: Payload,
+    body: &[u8],
+) -> Result<(), ClientError> {
+    client.hello().await?;
+    client.authenticate(receiver_pub).await?;
+    client
+        .request_address(recipient_user, AttestationMode::Ephemeral, receiver_pub)
+        .await?;
+    client
+        .send_invoice(sender_username, message_id, payload, body)
+        .await?;
+    let _ = client.quit().await;
+    Ok(())
+}
+
+/// Everything needed to deliver an invoice to a receiver over implicit TLS.
+///
+/// Resolves nothing — the caller supplies the resolved endpoint and the
+/// receiver's domain key. `receiver_pub` is verified via the domain-key
+/// handshake (accept-any-cert TLS, as server identity comes from the handshake).
+pub struct SendInvoice {
+    pub endpoint: String,
+    pub receiver_domain: String,
+    pub sender_domain: String,
+    pub sender_username: String,
+    pub recipient_user: String,
+    pub receiver_pub: VerifyingKey,
+    pub message_id: String,
+    pub payload: Payload,
+    pub body: Vec<u8>,
+}
+
+impl SendInvoice {
+    /// Connect to `endpoint` over implicit TLS and deliver the invoice.
+    pub async fn deliver(&self) -> Result<(), ClientError> {
+        let client = connect_tcp_tls(
+            &self.endpoint,
+            &self.receiver_domain,
+            accept_any_cert_client_config(),
+            &self.sender_domain,
+        )
+        .await?;
+        send_invoice_over(
+            client,
+            &self.sender_username,
+            &self.recipient_user,
+            &self.receiver_pub,
+            &self.message_id,
+            self.payload,
+            &self.body,
+        )
+        .await
+    }
+}
+
 /// An accept-any-certificate TLS client config.
 ///
 /// Server *identity* in ZSMTP comes from the domain-key handshake (the

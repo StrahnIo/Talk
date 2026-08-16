@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/talkd",
     "crates/talk-core",
+    "crates/talk-ctl",
     "crates/talk-protocol",
     "crates/talk-imap",
     "crates/talk-mailstore",

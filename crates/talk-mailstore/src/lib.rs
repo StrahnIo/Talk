@@ -25,6 +25,33 @@ pub struct User {
     pub registration_attestation: Option<String>,
 }
 
+/// A user as shown in listings (no sensitive key material).
+#[derive(Debug, Clone)]
+pub struct UserSummary {
+    pub id: i64,
+    pub username: String,
+    pub created_at: i64,
+    pub has_ivk: bool,
+    pub has_attestation: bool,
+}
+
+/// A pinned sender keyring entry for a user.
+#[derive(Debug, Clone)]
+pub struct KeyringEntry {
+    pub sender_mailbox: String,
+    pub sender_pubkey: String,
+    pub state: String,
+    pub first_seen: i64,
+}
+
+/// A DK wrapper share: `(share_id, wrapped_dk, revoked)`.
+#[derive(Debug, Clone)]
+pub struct ShareEntry {
+    pub share_id: String,
+    pub wrapped_dk: Vec<u8>,
+    pub revoked: bool,
+}
+
 /// Metadata for a message — everything the IMAP server can expose without
 /// touching the ciphertext body.
 #[derive(Debug, Clone)]

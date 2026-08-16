@@ -12,6 +12,7 @@ pub mod attestation;
 pub mod client;
 pub mod codec;
 pub mod dns;
+pub mod emulate;
 pub mod envelope;
 pub mod framing;
 pub mod handshake;
@@ -22,20 +23,21 @@ pub mod status;
 
 pub use attestation::{
     AddressProvider, Attestation, AttestationError, AttestationMode, MintedAddress,
-    PlaceholderAddressProvider,
+    PlaceholderAddressProvider, RegistrationAttestation,
 };
 pub use client::{
-    ClientError, ClientState, ZsmptClient, accept_any_cert_client_config, connect_tcp,
-    connect_tcp_tls, connect_unix,
+    ClientError, ClientState, SendInvoice, ZsmptClient, accept_any_cert_client_config, connect_tcp,
+    connect_tcp_tls, connect_unix, send_invoice_over,
 };
 pub use dns::{
     DohDomainKeyResolver, DohEndpointResolver, DomainKeyResolver, EndpointResolver, ResolverError,
     SRV_SERVICE, StaticDomainKeyResolver, StaticEndpointResolver, parse_srv,
 };
+pub use emulate::EmulatePayload;
 pub use envelope::{Envelope, Payload, Recipient};
 pub use handshake::{Challenge, ChallengeResponse, DomainKey, HandshakeError};
 pub use mailbox::{
-    AsyncSecureMailboxHandler, AttestResult, RegisterResult, SecureMailboxClient,
+    AsyncSecureMailboxHandler, AttestResult, EmulateResult, RegisterResult, SecureMailboxClient,
     SecureMailboxHandler, SendResult,
 };
 pub use session::{

@@ -64,29 +64,6 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     } else {
         Some(cfg.network.send_endpoint.clone())
     };
-    let handler = std::sync::Arc::new(secure::SecureMailboxService::new(
-        &sender_domain,
-        send_override,
-        domain_key.clone(),
-        store.clone(),
-    ));
-    let mailbox_listener = secure_mailbox.to_tokio()?;
-    tokio::spawn(async move {
-        loop {
-            let (stream, _) = match mailbox_listener.accept().await {
-                Ok(p) => p,
-                Err(e) => {
-                    error!(error = %e, "secure_mailbox accept failed");
-                    continue;
-                }
-            };
-            let handler = handler.clone();
-            tokio::spawn(async move {
-                let mut stream = stream;
-                let _ = talk_protocol::mailbox::serve(&mut stream, handler.as_ref()).await;
-            });
-        }
-    });
 
     let zsmtp = SocketListener::bind(&cfg.sockets.zsmtp)?;
     info!(path = %zsmtp.local_path().display(), "zsmtp.sock listening");
@@ -124,6 +101,41 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     }
     let sink =
         Arc::new(sink::StoreDeliverySink::new(store.clone()).with_events(imap.event_sender()));
+
+    // The secure_mailbox handler: wired to the same delivery sink (so local
+    // payment emulation broadcasts to IMAP IDLE sessions) and the template
+    // override.
+    let handler = std::sync::Arc::new(
+        secure::SecureMailboxService::new(
+            &sender_domain,
+            send_override,
+            domain_key.clone(),
+            store.clone(),
+        )
+        .with_sink(sink.clone())
+        .with_template(
+            cfg.mailbox.template_path.clone(),
+            cfg.general.data_dir.clone(),
+        ),
+    );
+    let mailbox_listener = secure_mailbox.to_tokio()?;
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match mailbox_listener.accept().await {
+                Ok(p) => p,
+                Err(e) => {
+                    error!(error = %e, "secure_mailbox accept failed");
+                    continue;
+                }
+            };
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let mut stream = stream;
+                let _ = talk_protocol::mailbox::serve(&mut stream, handler.as_ref()).await;
+            });
+        }
+    });
+
     let directory = Arc::new(sink::StoreUserDirectory::new(store.clone()));
     tokio::spawn(zsmtp_server::serve(
         zsmtp_domain.clone(),

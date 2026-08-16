@@ -90,6 +90,95 @@ impl StoreDeliverySink {
     }
 }
 
+impl StoreDeliverySink {
+    /// Resolve the local user for a mailbox's user half, mapping failures to
+    /// `DeliveryOutcome` the same way the wire path does.
+    fn recipient_user(
+        &self,
+        recipient_mailbox: &str,
+    ) -> Result<talk_mailstore::User, DeliveryOutcome> {
+        let user = match recipient_mailbox.split('@').next() {
+            Some(u) if !u.is_empty() => u,
+            _ => {
+                return Err(DeliveryOutcome::Rejected {
+                    reason: "malformed recipient mailbox".into(),
+                });
+            }
+        };
+        match self.store.get_user(user) {
+            Ok(Some(u)) => Ok(u),
+            Ok(None) => Err(DeliveryOutcome::Rejected {
+                reason: format!("no such recipient: {user}"),
+            }),
+            Err(e) => {
+                warn!(error = %e, "recipient lookup failed");
+                Err(DeliveryOutcome::RetryLater {
+                    reason: "storage error".into(),
+                })
+            }
+        }
+    }
+
+    /// Append a message to a user's INBOX and notify IDLE sessions.
+    fn append_and_broadcast(
+        &self,
+        user_id: i64,
+        msg: NewMessage,
+        message_id: &str,
+    ) -> DeliveryOutcome {
+        match self.store.append_message(user_id, msg) {
+            Ok(_) => {}
+            Err(talk_mailstore::StoreError::DuplicateMessage(_)) => {
+                return DeliveryOutcome::Rejected {
+                    reason: format!("duplicate message id: {message_id}"),
+                };
+            }
+            Err(e) => {
+                warn!(error = %e, "append failed");
+                return DeliveryOutcome::RetryLater {
+                    reason: "storage error".into(),
+                };
+            }
+        }
+        if let Some(events) = &self.events {
+            let _ = events.send(MailboxEvent::MessageAppended { user_id });
+        }
+        DeliveryOutcome::Accepted {
+            message_id: message_id.to_string(),
+        }
+    }
+
+    /// Deliver an already-rendered message for a local user (used by local
+    /// payment emulation). Trust state follows the sender label via the
+    /// keyring, exactly like the wire path.
+    pub fn deliver_emulated(
+        &self,
+        recipient_user: &str,
+        sender_label: &str,
+        message_id: &str,
+        subject: &str,
+        body: &[u8],
+    ) -> DeliveryOutcome {
+        let user = match self.recipient_user(recipient_user) {
+            Ok(u) => u,
+            Err(outcome) => return outcome,
+        };
+        let trust_state = StoreKeyring::new(self.store.clone())
+            .state(user.id, sender_label)
+            .as_str()
+            .to_string();
+        let msg = NewMessage {
+            message_id: message_id.to_string(),
+            subject: subject.to_string(),
+            body: body.to_vec(),
+            flags: MessageFlags::default(),
+            sender: sender_label.to_string(),
+            trust_state,
+        };
+        self.append_and_broadcast(user.id, msg, message_id)
+    }
+}
+
 impl DeliverySink for StoreDeliverySink {
     fn deliver(
         &self,
@@ -99,30 +188,10 @@ impl DeliverySink for StoreDeliverySink {
         payload: Payload,
         body: &[u8],
     ) -> DeliveryOutcome {
-        // The recipient mailbox is `user@domain`; look up the local user.
-        let user = match recipient_mailbox.split('@').next() {
-            Some(u) if !u.is_empty() => u,
-            _ => {
-                return DeliveryOutcome::Rejected {
-                    reason: "malformed recipient mailbox".into(),
-                };
-            }
+        let user = match self.recipient_user(recipient_mailbox) {
+            Ok(u) => u,
+            Err(outcome) => return outcome,
         };
-        let user = match self.store.get_user(user) {
-            Ok(Some(u)) => u,
-            Ok(None) => {
-                return DeliveryOutcome::Rejected {
-                    reason: format!("no such recipient: {user}"),
-                };
-            }
-            Err(e) => {
-                warn!(error = %e, "recipient lookup failed");
-                return DeliveryOutcome::RetryLater {
-                    reason: "storage error".into(),
-                };
-            }
-        };
-
         let subject = match payload {
             Payload::Sealed => "New sealed invoice".to_string(),
             Payload::Plaintext => "New invoice".to_string(),
@@ -140,29 +209,7 @@ impl DeliverySink for StoreDeliverySink {
             sender: sender_mailbox.to_string(),
             trust_state,
         };
-
-        match self.store.append_message(user.id, msg) {
-            Ok(_) => {}
-            Err(talk_mailstore::StoreError::DuplicateMessage(_)) => {
-                return DeliveryOutcome::Rejected {
-                    reason: format!("duplicate message id: {message_id}"),
-                };
-            }
-            Err(e) => {
-                warn!(error = %e, "append failed");
-                return DeliveryOutcome::RetryLater {
-                    reason: "storage error".into(),
-                };
-            }
-        }
-
-        if let Some(events) = &self.events {
-            let _ = events.send(MailboxEvent::MessageAppended { user_id: user.id });
-        }
-
-        DeliveryOutcome::Accepted {
-            message_id: message_id.to_string(),
-        }
+        self.append_and_broadcast(user.id, msg, message_id)
     }
 }
 

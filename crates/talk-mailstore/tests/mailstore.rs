@@ -368,3 +368,160 @@ fn message_trust_state_roundtrip() {
     assert_eq!(list[0].sender, "alice@example.org");
     assert_eq!(list[0].trust_state, "trusted");
 }
+
+#[test]
+fn list_users_reports_summaries() {
+    let (_dir, store) = test_store();
+    make_user(&store, "zeta");
+    store
+        .create_user_full(
+            "alistair",
+            "hash",
+            &[1u8; 32],
+            Some("ivk-hex".into()),
+            Some("R".into()),
+        )
+        .expect("create full");
+
+    let users = store.list_users().expect("list");
+    assert_eq!(users.len(), 2);
+    let alistair = users.iter().find(|u| u.username == "alistair").unwrap();
+    assert!(alistair.has_ivk);
+    assert!(alistair.has_attestation);
+    let zeta = users.iter().find(|u| u.username == "zeta").unwrap();
+    assert!(!zeta.has_ivk);
+    assert!(!zeta.has_attestation);
+    assert!(alistair.created_at > 0);
+}
+
+#[test]
+fn set_password_changes_hash() {
+    let (_dir, store) = test_store();
+    make_user(&store, "pwuser");
+    store.set_password("pwuser", "new-hash").expect("set");
+    assert_eq!(
+        store.password_hash("pwuser").expect("get").as_deref(),
+        Some("new-hash")
+    );
+    assert!(store.set_password("missing", "h").is_err());
+}
+
+#[test]
+fn set_ivk_sets_and_clears() {
+    let (_dir, store) = test_store();
+    make_user(&store, "ivkuser");
+    store.set_ivk("ivkuser", Some("ivk-hex")).expect("set");
+    assert_eq!(
+        store
+            .get_user("ivkuser")
+            .expect("get")
+            .unwrap()
+            .ivk_commitment
+            .as_deref(),
+        Some("ivk-hex")
+    );
+    store.set_ivk("ivkuser", None).expect("clear");
+    assert!(
+        store
+            .get_user("ivkuser")
+            .expect("get")
+            .unwrap()
+            .ivk_commitment
+            .is_none()
+    );
+    assert!(store.set_ivk("missing", None).is_err());
+}
+
+#[test]
+fn delete_user_cascades() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "doomed");
+    store.add_share(user_id, "s1", b"wrapped").expect("share");
+    store
+        .keyring_set_trusted(user_id, "alice@example.org", "k", b"att")
+        .expect("pin");
+    store
+        .append_message(user_id, NewMessage::invoice("m", "s", b"b".to_vec()))
+        .expect("append");
+
+    store.delete_user("doomed").expect("delete");
+    assert!(store.get_user("doomed").expect("get").is_none());
+    assert!(store.list_messages(user_id).is_err(), "mailbox gone");
+    assert!(store.list_shares(user_id).expect("shares").is_empty());
+    assert!(store.list_keyring(user_id).expect("keyring").is_empty());
+    assert!(store.delete_user("doomed").is_err(), "second delete fails");
+}
+
+#[test]
+fn shares_list_revoked_and_add() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "shares");
+    store.add_share(user_id, "s1", b"w1").expect("add1");
+    store.add_share(user_id, "s2", b"w2").expect("add2");
+
+    let list = store.list_shares(user_id).expect("list");
+    assert_eq!(list.len(), 2);
+    assert!(list.iter().all(|s| !s.revoked));
+
+    store.revoke_share(user_id, "s1").expect("revoke");
+    let list = store.list_shares(user_id).expect("list");
+    let s1 = list.iter().find(|s| s.share_id == "s1").unwrap();
+    assert!(s1.revoked);
+    assert_eq!(s1.wrapped_dk, b"w1", "wrapped dk retained after revoke");
+
+    // Revoked shares are excluded from the active (app-password) set.
+    let active = store.get_shares(user_id).expect("active");
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].0, "s2");
+
+    assert!(store.revoke_share(user_id, "nope").is_err());
+}
+
+#[test]
+fn keyring_list_and_unpin() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "krlist");
+    store
+        .keyring_set_trusted(user_id, "a@example.org", "ka", b"att")
+        .expect("pin a");
+    store
+        .keyring_set_trusted(user_id, "b@example.org", "kb", b"att")
+        .expect("pin b");
+
+    let entries = store.list_keyring(user_id).expect("list");
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|e| e.state == "trusted"));
+    assert!(entries.iter().all(|e| e.first_seen > 0));
+
+    store
+        .unpin_keyring(user_id, "a@example.org")
+        .expect("unpin");
+    let entries = store.list_keyring(user_id).expect("list");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].sender_mailbox, "b@example.org");
+    assert!(store.unpin_keyring(user_id, "missing@example.org").is_err());
+}
+
+#[test]
+fn settings_crud() {
+    let (_dir, store) = test_store();
+    assert!(store.get_setting("k").expect("get").is_none());
+
+    store.set_setting("k", "v1").expect("set");
+    store.set_setting("k", "v2").expect("overwrite");
+    assert_eq!(store.get_setting("k").expect("get").as_deref(), Some("v2"));
+
+    store.set_setting("other", "x").expect("set other");
+    let all = store.list_settings().expect("list");
+    assert_eq!(
+        all,
+        vec![
+            ("k".to_string(), "v2".to_string()),
+            ("other".to_string(), "x".to_string())
+        ]
+    );
+
+    store.delete_setting("k").expect("delete");
+    assert!(store.get_setting("k").expect("get").is_none());
+    assert!(store.delete_setting("k").is_err());
+}
