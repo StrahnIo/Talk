@@ -101,32 +101,55 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
         talk_core::config::AuthMode::LocalAuth => talk_imap::AuthMode::LocalAuth,
     };
     imap = imap.with_auth_mode(imap_auth);
-    // Enable IMAPS if a cert/key pair is configured (files exist).
-    if cfg.tls.cert.exists() && cfg.tls.key.exists() {
-        match talk_imap::tls::load_server_config(&cfg.tls.cert, &cfg.tls.key) {
-            Ok(config) => {
-                info!(
-                    cert = %cfg.tls.cert.display(),
-                    "IMAP TLS enabled (IMAPS)"
-                );
-                imap = imap.with_tls(config);
+    // Load the TLS server config once (shared by IMAPS and ZSMTP-over-TLS).
+    let tls_config: Option<std::sync::Arc<rustls::ServerConfig>> =
+        if cfg.tls.cert.exists() && cfg.tls.key.exists() {
+            match talk_imap::tls::load_server_config(&cfg.tls.cert, &cfg.tls.key) {
+                Ok(config) => {
+                    info!(cert = %cfg.tls.cert.display(), "TLS enabled");
+                    Some(config)
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to load TLS config");
+                    None
+                }
             }
-            Err(e) => {
-                error!(error = %e, "failed to load IMAP TLS config; falling back to plaintext");
-            }
-        }
-    } else {
-        info!("no IMAP TLS cert/key configured; listening plaintext");
+        } else {
+            info!("no TLS cert/key configured; plaintext only");
+            None
+        };
+    if let Some(config) = &tls_config {
+        imap = imap.with_tls(config.clone());
     }
     let sink =
         Arc::new(sink::StoreDeliverySink::new(store.clone()).with_events(imap.event_sender()));
     let directory = Arc::new(sink::StoreUserDirectory::new(store.clone()));
     tokio::spawn(zsmtp_server::serve(
+        zsmtp_domain.clone(),
+        domain_key.clone(),
+        sink.clone(),
+        directory.clone(),
+        zsmtp_listener,
+    ));
+
+    // ZSMTP over TCP (implicit TLS, SMTPS-style). If no TLS config, serve
+    // plaintext with a warning.
+    let zsmtp_listen = cfg.sockets.zsmtp_listen.clone();
+    let tcp_listener = match tokio::net::TcpListener::bind(&zsmtp_listen).await {
+        Ok(l) => l,
+        Err(e) => {
+            error!(error = %e, addr = %zsmtp_listen, "ZSMTP TCP listener failed to bind");
+            return Err(e.into());
+        }
+    };
+    info!(addr = %zsmtp_listen, tls = tls_config.is_some(), "ZSMTP TCP listening");
+    tokio::spawn(zsmtp_server::serve_tcp(
         zsmtp_domain,
         domain_key,
         sink,
         directory,
-        zsmtp_listener,
+        tls_config,
+        tcp_listener,
     ));
 
     let imap_addr = cfg.sockets.imap_listen.clone();

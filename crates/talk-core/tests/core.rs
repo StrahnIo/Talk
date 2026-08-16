@@ -107,6 +107,7 @@ fn config_unknown_field_rejected() {
         [sockets]
         secure_mailbox = "/tmp/a.sock"
         zsmtp = "/tmp/b.sock"
+        zsmtp_listen = "127.0.0.1:1465"
         imap_listen = "127.0.0.1:1143"
 
         [tls]

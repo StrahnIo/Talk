@@ -46,6 +46,8 @@ pub struct Network {
 pub struct Sockets {
     pub secure_mailbox: PathBuf,
     pub zsmtp: PathBuf,
+    /// ZSMTP TCP listener (implicit TLS, SMTPS-style like port 465).
+    pub zsmtp_listen: String,
     pub imap_listen: String,
 }
 
@@ -158,6 +160,7 @@ mod tests {
             [sockets]
             secure_mailbox = "/tmp/secure.sock"
             zsmtp = "/tmp/zsmtp.sock"
+            zsmtp_listen = "127.0.0.1:1465"
             imap_listen = "127.0.0.1:993"
 
             [tls]

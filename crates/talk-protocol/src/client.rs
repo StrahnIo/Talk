@@ -235,3 +235,22 @@ pub async fn connect_tcp(
     let stream = tokio::net::TcpStream::connect(addr).await?;
     ZsmptClient::connect(stream, sender_domain).await
 }
+
+/// Convenience: connect to a TCP address over implicit TLS (SMTPS-style).
+///
+/// `server_name` is the SNI / certificate hostname (e.g. the receiver's
+/// domain). `config` is the client TLS config (verifier choice is the
+/// caller's: use webpki roots, or a custom verifier for self-signed dev certs).
+pub async fn connect_tcp_tls(
+    addr: impl tokio::net::ToSocketAddrs,
+    server_name: &str,
+    config: std::sync::Arc<rustls::ClientConfig>,
+    sender_domain: impl Into<String>,
+) -> Result<ZsmptClient<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>, ClientError> {
+    let server_name = rustls::pki_types::ServerName::try_from(server_name.to_string())
+        .map_err(|e| ClientError::Auth(format!("invalid server name: {e}")))?;
+    let stream = tokio::net::TcpStream::connect(addr).await?;
+    let connector = tokio_rustls::TlsConnector::from(config);
+    let tls = connector.connect(server_name, stream).await?;
+    ZsmptClient::connect(tls, sender_domain).await
+}

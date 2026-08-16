@@ -9,6 +9,7 @@ send_endpoint = "receiver.example.org:2525"
 [sockets]
 secure_mailbox = "/run/talk/secure_mailbox.sock"
 zsmtp = "/run/talk/zsmtp.sock"
+zsmtp_listen = "0.0.0.0:465"
 imap_listen = "127.0.0.1:1143"
 
 [tls]
