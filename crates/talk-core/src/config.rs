@@ -13,6 +13,15 @@ pub struct Config {
     pub sockets: Sockets,
     pub tls: Tls,
     pub mailbox: Mailbox,
+    #[serde(default)]
+    pub auth: Auth,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Auth {
+    #[serde(default)]
+    pub mode: AuthMode,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +64,33 @@ pub struct Mailbox {
     #[serde(default)]
     pub passphrase: String,
     pub wallet_dir: PathBuf,
+}
+
+/// How the server authenticates local users.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthMode {
+    /// Authenticate against the SQLite users table (argon2 password hash).
+    #[default]
+    Database,
+    /// Authenticate against OS user accounts: the user must be a member of the
+    /// `zsmtp` group; the OS username maps to the mailbox username.
+    LocalAuth,
+}
+
+impl<'de> serde::Deserialize<'de> for AuthMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.to_ascii_lowercase().as_str() {
+            "database" => Ok(AuthMode::Database),
+            "localauth" => Ok(AuthMode::LocalAuth),
+            _ => Err(serde::de::Error::custom(
+                "auth mode must be database or localauth",
+            )),
+        }
+    }
 }
 
 fn default_log_level() -> String {

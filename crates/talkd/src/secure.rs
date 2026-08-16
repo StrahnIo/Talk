@@ -2,7 +2,7 @@
 
 use ed25519_dalek::{Signer, SigningKey};
 use std::sync::Arc;
-use talk_mailstore::{hash_password, SqliteMailStore};
+use talk_mailstore::{SqliteMailStore, hash_password};
 use talk_protocol::attestation::{Attestation, AttestationMode, mint_pair};
 use talk_protocol::envelope::Payload;
 use talk_protocol::mailbox::{AttestResult, RegisterResult, SecureMailboxHandler, SendResult};
@@ -169,7 +169,8 @@ impl SecureMailboxHandler for SecureMailboxService {
             Ok(h) => h,
             Err(e) => return RegisterResult::Error(format!("password hash failed: {e}")),
         };
-        let registration_attestation = self.build_registration_attestation(username, &pubkey_bytes, &ivk);
+        let registration_attestation =
+            self.build_registration_attestation(username, &pubkey_bytes, &ivk);
 
         match self.store.create_user_full(
             username,
@@ -305,8 +306,7 @@ mod tests {
         assert!(talk_mailstore::verify_password("s3cret", &stored_hash).expect("verify"));
         // Registration attestation R is stored and non-empty.
         let r_att = user.registration_attestation.expect("R stored");
-        let parsed: RegistrationAttestation =
-            serde_json::from_str(&r_att).expect("R parses");
+        let parsed: RegistrationAttestation = serde_json::from_str(&r_att).expect("R parses");
         assert_eq!(parsed.domain, "example.org");
         assert_eq!(parsed.username, "alice");
         assert_eq!(parsed.master_pubkey, pubkey_hex);
@@ -349,7 +349,10 @@ mod tests {
     fn register_duplicate_username_fails() {
         let (svc, _store) = service_with_store();
         let pubkey = hex::encode([1u8; 32]);
-        assert_eq!(svc.register("dave", "pw", &pubkey, None), RegisterResult::Ok);
+        assert_eq!(
+            svc.register("dave", "pw", &pubkey, None),
+            RegisterResult::Ok
+        );
         let r = svc.register("dave", "pw2", &pubkey, None);
         let RegisterResult::Error(e) = r else {
             panic!("expected error");
@@ -365,11 +368,15 @@ mod tests {
         use std::sync::Arc;
         let key = SigningKey::generate(&mut rand::rngs::OsRng);
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(
-            SqliteMailStore::open(dir.path().join("mailbox.db")).expect("open store"),
-        );
+        let store =
+            Arc::new(SqliteMailStore::open(dir.path().join("mailbox.db")).expect("open store"));
         (
-            SecureMailboxService::new("example.org", "receiver.example.org:2525", key, store.clone()),
+            SecureMailboxService::new(
+                "example.org",
+                "receiver.example.org:2525",
+                key,
+                store.clone(),
+            ),
             store,
         )
     }

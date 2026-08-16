@@ -7,8 +7,9 @@ use talk_mailstore::{MessageFlags, NewMessage, SqliteMailStore};
 fn setup() -> (tempfile::TempDir, Arc<SqliteMailStore>, i64) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(SqliteMailStore::open(dir.path().join("mailbox.db")).expect("open"));
+    let hash = talk_mailstore::hash_password("secret").expect("hash");
     let user_id = store
-        .create_user("alice", "hash", &[0u8; 32])
+        .create_user("alice", &hash, &[0u8; 32])
         .expect("create user")
         .id;
     store
@@ -31,6 +32,7 @@ fn session_with(store: Arc<SqliteMailStore>) -> Session {
         username: String::new(),
         user_id: 0,
         store,
+        auth_mode: talk_imap::AuthMode::Database,
     }
 }
 

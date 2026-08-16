@@ -95,6 +95,12 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     let zsmtp_domain = sender_domain.clone();
 
     let mut imap = ImapServer::new(store.clone(), "talkd");
+    // Set the user auth mode from config.
+    let imap_auth = match cfg.auth.mode {
+        talk_core::config::AuthMode::Database => talk_imap::AuthMode::Database,
+        talk_core::config::AuthMode::LocalAuth => talk_imap::AuthMode::LocalAuth,
+    };
+    imap = imap.with_auth_mode(imap_auth);
     // Enable IMAPS if a cert/key pair is configured (files exist).
     if cfg.tls.cert.exists() && cfg.tls.key.exists() {
         match talk_imap::tls::load_server_config(&cfg.tls.cert, &cfg.tls.key) {

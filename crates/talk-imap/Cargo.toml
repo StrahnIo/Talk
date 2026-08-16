@@ -15,6 +15,7 @@ time = { workspace = true }
 thiserror = "2"
 tracing = { workspace = true }
 hex = "0.4"
+libc = "0.2"
 talk-mailstore = { path = "../talk-mailstore" }
 talk-keys = { path = "../talk-keys" }
 

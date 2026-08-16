@@ -13,7 +13,11 @@ async fn boot_server() -> (u16, Arc<SqliteMailStore>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(SqliteMailStore::open(dir.path().join("mailbox.db")).expect("open"));
     let user_id = store
-        .create_user("alice", "hash", &[0u8; 32])
+        .create_user(
+            "alice",
+            &talk_mailstore::hash_password("secret").expect("hash"),
+            &[0u8; 32],
+        )
         .expect("create user")
         .id;
     store
@@ -115,20 +119,15 @@ async fn store_and_search_flow() {
 }
 
 #[tokio::test]
-async fn wrong_password_accepted_until_hashing_lands() {
-    // TODO: v1 login accepts any non-empty password as a placeholder until
-    // password hashing is implemented (see session.rs login). When hashing
-    // lands, this becomes wrong_password_rejected.
+async fn wrong_password_rejected() {
     let (port, _store) = boot_server().await;
     let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .expect("tcp connect");
     let client =
         async_imap::Client::new(tokio_util::compat::TokioAsyncReadCompatExt::compat(stream));
-    client
-        .login("alice", "wrong")
-        .await
-        .expect("placeholder login accepts any password");
+    let err = client.login("alice", "wrong").await;
+    assert!(err.is_err(), "wrong password must be rejected");
 }
 
 #[tokio::test]

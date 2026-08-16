@@ -23,7 +23,11 @@ async fn boot_tls_server() -> (u16, Arc<SqliteMailStore>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(SqliteMailStore::open(dir.path().join("mailbox.db")).expect("open"));
     let user_id = store
-        .create_user("alice", "hash", &[0u8; 32])
+        .create_user(
+            "alice",
+            &talk_mailstore::hash_password("secret").expect("hash"),
+            &[0u8; 32],
+        )
         .expect("create user")
         .id;
     store
