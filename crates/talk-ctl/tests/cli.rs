@@ -70,6 +70,25 @@ fn run(args: &[&str]) -> Output {
     cmd.output().expect("spawn talkctl")
 }
 
+fn run_with_stdin(args: &[&str], input: &[u8]) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(bin())
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn talkctl");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(input)
+        .expect("write stdin");
+    child.wait_with_output().expect("wait")
+}
+
 fn ok(out: &Output, what: &str) {
     assert!(
         out.status.success(),
@@ -332,4 +351,248 @@ fn attest_direct_when_daemon_down() {
     assert!(text.contains("user        erin"));
     assert!(text.contains("mode        ephemeral"));
     assert!(text.contains("signature   "));
+}
+
+#[test]
+fn key_generate_to_file_and_pubkey_matches() {
+    let s = setup();
+    let priv_file = s.data.join("master.key");
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "key",
+        "generate",
+        "--out",
+        priv_file.to_str().unwrap(),
+    ]);
+    ok(&out, "key generate");
+    let public_line = stdout(&out);
+    let pub_hex = public_line
+        .lines()
+        .find_map(|l| l.strip_prefix("public: "))
+        .expect("public: line")
+        .to_string();
+    assert_eq!(pub_hex.len(), 64);
+
+    // The private file is raw 32 bytes, mode 0600.
+    let bytes = std::fs::read(&priv_file).expect("read key");
+    assert_eq!(bytes.len(), 32);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&priv_file)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "private key must be mode 0600");
+    }
+
+    // key pubkey from the file reproduces the public half.
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "key",
+        "pubkey",
+        "--key",
+        priv_file.to_str().unwrap(),
+    ]);
+    ok(&out, "key pubkey");
+    assert_eq!(stdout(&out).trim(), pub_hex);
+
+    // key pubkey from hex also matches (the private key, hex-encoded).
+    let priv_hex = hex::encode(&bytes);
+    let out = run(&[&cfg_flag(&s.cfg), "key", "pubkey", "--hex", &priv_hex]);
+    ok(&out, "key pubkey --hex");
+    assert_eq!(stdout(&out).trim(), pub_hex);
+}
+
+#[test]
+fn key_generate_refuses_overwrite_without_force() {
+    let s = setup();
+    let priv_file = s.data.join("master.key");
+    ok(
+        &run(&[
+            &cfg_flag(&s.cfg),
+            "key",
+            "generate",
+            "--out",
+            priv_file.to_str().unwrap(),
+        ]),
+        "generate",
+    );
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "key",
+        "generate",
+        "--out",
+        priv_file.to_str().unwrap(),
+    ]);
+    err_contains(&out, "already exists", "overwrite refusal");
+    ok(
+        &run(&[
+            &cfg_flag(&s.cfg),
+            "key",
+            "generate",
+            "--out",
+            priv_file.to_str().unwrap(),
+            "--force",
+        ]),
+        "generate --force",
+    );
+}
+
+#[test]
+fn key_seal_unseal_roundtrip_files() {
+    let s = setup();
+    let priv_file = s.data.join("master.key");
+    ok(
+        &run(&[
+            &cfg_flag(&s.cfg),
+            "key",
+            "generate",
+            "--out",
+            priv_file.to_str().unwrap(),
+        ]),
+        "generate",
+    );
+
+    let payload = s.data.join("payload.bin");
+    let sealed = s.data.join("sealed.bin");
+    let plain = s.data.join("plain.bin");
+    std::fs::write(&payload, b"opaque invoice body \x00\x01\x02").expect("payload");
+
+    ok(
+        &run(&[
+            &cfg_flag(&s.cfg),
+            "key",
+            "seal",
+            "--key",
+            priv_file.to_str().unwrap(),
+            "--input",
+            payload.to_str().unwrap(),
+            "--output",
+            sealed.to_str().unwrap(),
+        ]),
+        "seal",
+    );
+    ok(
+        &run(&[
+            &cfg_flag(&s.cfg),
+            "key",
+            "unseal",
+            "--key",
+            priv_file.to_str().unwrap(),
+            "--input",
+            sealed.to_str().unwrap(),
+            "--output",
+            plain.to_str().unwrap(),
+        ]),
+        "unseal",
+    );
+    assert_eq!(
+        std::fs::read(&plain).expect("plain"),
+        b"opaque invoice body \x00\x01\x02"
+    );
+
+    // The sealed envelope is versioned and larger than the input.
+    let sealed_bytes = std::fs::read(&sealed).expect("sealed");
+    assert!(sealed_bytes.len() > 32);
+    assert_eq!(&sealed_bytes[..4], b"TKS1");
+}
+
+#[test]
+fn key_seal_to_explicit_pub_and_wrong_key_fails() {
+    let s = setup();
+    let priv_key = s.data.join("master.key");
+    let other_priv = s.data.join("other.key");
+    ok(
+        &run(&[
+            &cfg_flag(&s.cfg),
+            "key",
+            "generate",
+            "--out",
+            priv_key.to_str().unwrap(),
+        ]),
+        "generate a",
+    );
+    ok(
+        &run(&[
+            &cfg_flag(&s.cfg),
+            "key",
+            "generate",
+            "--out",
+            other_priv.to_str().unwrap(),
+        ]),
+        "generate b",
+    );
+
+    let out = run(&[&cfg_flag(&s.cfg), "key", "pubkey", "--key", priv_key.to_str().unwrap()]);
+    let pub_hex = stdout(&out).trim().to_string();
+
+    // Seal to the explicit public key, decrypt with the matching private key.
+    let payload = s.data.join("p.bin");
+    let sealed = s.data.join("s.bin");
+    std::fs::write(&payload, b"to-explicit-pub").expect("payload");
+    ok(
+        &run(&[
+            &cfg_flag(&s.cfg),
+            "key",
+            "seal",
+            "--key",
+            priv_key.to_str().unwrap(),
+            "--to",
+            &pub_hex,
+            "--input",
+            payload.to_str().unwrap(),
+            "--output",
+            sealed.to_str().unwrap(),
+        ]),
+        "seal to pub",
+    );
+
+    // Wrong private key cannot decrypt.
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "key",
+        "unseal",
+        "--key",
+        other_priv.to_str().unwrap(),
+        "--input",
+        sealed.to_str().unwrap(),
+    ]);
+    err_contains(&out, "unseal failed", "wrong key unseal");
+}
+
+#[test]
+fn key_seal_unseal_via_stdin_stdout() {
+    let s = setup();
+    let priv_file = s.data.join("master.key");
+    ok(
+        &run(&[
+            &cfg_flag(&s.cfg),
+            "key",
+            "generate",
+            "--out",
+            priv_file.to_str().unwrap(),
+        ]),
+        "generate",
+    );
+
+    // echo "..." | seal | unseal == "..."
+    let seal = run_with_stdin(
+        &[&cfg_flag(&s.cfg), "key", "seal", "--key", priv_file.to_str().unwrap()],
+        b"piped data",
+    );
+    ok(&seal, "seal stdin");
+    let unseal = run_with_stdin(
+        &[
+            &cfg_flag(&s.cfg),
+            "key",
+            "unseal",
+            "--key",
+            priv_file.to_str().unwrap(),
+        ],
+        &seal.stdout,
+    );
+    ok(&unseal, "unseal stdout");
+    assert_eq!(unseal.stdout, b"piped data");
 }
