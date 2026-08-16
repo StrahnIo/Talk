@@ -4,6 +4,8 @@
 app-password shares, the sender keyring, server-side settings, and the daemon's
 config file. It runs from the same machine as the daemon.
 
+> Full reference: see the man page at [`man-pages/talkctl.1.md`](../man-pages/talkctl.1.md).
+
 ## Transport model
 
 Two classes of commands, with different availability:
