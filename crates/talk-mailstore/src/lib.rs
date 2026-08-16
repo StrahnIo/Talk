@@ -214,9 +214,15 @@ mod tests {
 
     #[test]
     fn matching_domain_resolves_to_local_part() {
-        assert_eq!(local_username("alice@talk.local", "talk.local"), Some("alice"));
+        assert_eq!(
+            local_username("alice@talk.local", "talk.local"),
+            Some("alice")
+        );
         // Domain match is case-insensitive.
-        assert_eq!(local_username("alice@TALK.LOCAL", "talk.local"), Some("alice"));
+        assert_eq!(
+            local_username("alice@TALK.LOCAL", "talk.local"),
+            Some("alice")
+        );
     }
 
     #[test]

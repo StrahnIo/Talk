@@ -346,10 +346,14 @@ fn validate_username(username: &str) -> Result<(), CtlError> {
         return Err(CtlError::msg("username is required"));
     }
     if username.contains('@') {
-        return Err(CtlError::msg("username must be a bare local name (no @domain)"));
+        return Err(CtlError::msg(
+            "username must be a bare local name (no @domain)",
+        ));
     }
     if username.contains(':') {
-        return Err(CtlError::msg("username must not contain ':' (reserved for app passwords)"));
+        return Err(CtlError::msg(
+            "username must not contain ':' (reserved for app passwords)",
+        ));
     }
     Ok(())
 }

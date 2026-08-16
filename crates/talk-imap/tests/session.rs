@@ -152,7 +152,9 @@ fn app_password_with_local_domain_accepted() {
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let mut s = session_with(Arc::clone(&store));
-    let out = s.handle(&parse_cmd(&format!("A1 LOGIN alice@talk.local:app {share_hex}")));
+    let out = s.handle(&parse_cmd(&format!(
+        "A1 LOGIN alice@talk.local:app {share_hex}"
+    )));
     assert!(out.contains("A1 OK"), "got: {out}");
     assert_eq!(s.username, "alice");
 }
