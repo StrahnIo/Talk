@@ -222,6 +222,47 @@ impl SqliteMailStore {
         Ok(hash)
     }
 
+    /// Pin a sender as trusted for a user (client-verified attestation).
+    pub fn keyring_set_trusted(
+        &self,
+        user_id: i64,
+        sender_mailbox: &str,
+        sender_pubkey: &str,
+        attestation: &[u8],
+    ) -> Result<(), StoreError> {
+        let now = now_secs();
+        let guard = self.lock()?;
+        guard.execute(
+            "INSERT INTO keyring_entries
+             (user_id, sender_mailbox, sender_pubkey, attestation, state, first_seen)
+             VALUES (?1, ?2, ?3, ?4, 'trusted', ?5)
+             ON CONFLICT(user_id, sender_mailbox) DO UPDATE SET
+               sender_pubkey = excluded.sender_pubkey,
+               attestation = excluded.attestation,
+               state = 'trusted'",
+            params![user_id, sender_mailbox, sender_pubkey, attestation, now],
+        )?;
+        Ok(())
+    }
+
+    /// The pinned sender key for a user, if any.
+    pub fn keyring_sender_key(
+        &self,
+        user_id: i64,
+        sender_mailbox: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let guard = self.lock()?;
+        let key: Option<String> = guard
+            .query_row(
+                "SELECT sender_pubkey FROM keyring_entries
+                 WHERE user_id = ?1 AND sender_mailbox = ?2 AND state = 'trusted'",
+                params![user_id, sender_mailbox],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(key)
+    }
+
     fn mailbox_row(&self, user_id: i64) -> Result<(i64, u32, i64), StoreError> {
         let guard = self.lock()?;
         guard
@@ -256,8 +297,8 @@ impl SqliteMailStore {
         let sender = msg.sender.clone();
         guard.execute(
             "INSERT INTO messages
-             (mailbox_id, message_id, uid, internaldate, flags, subject, size, body_blob, sender)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (mailbox_id, message_id, uid, internaldate, flags, subject, size, body_blob, sender, trust_state)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 mailbox_id,
                 &msg.message_id,
@@ -268,6 +309,7 @@ impl SqliteMailStore {
                 size,
                 &msg.body,
                 &sender,
+                &msg.trust_state,
             ],
         )?;
         guard.execute(
@@ -284,7 +326,7 @@ impl SqliteMailStore {
             subject: msg.subject,
             size: size as u64,
             sender,
-            trust_state: "unverified".to_string(),
+            trust_state: msg.trust_state,
         })
     }
 

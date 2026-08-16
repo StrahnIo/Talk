@@ -32,6 +32,7 @@ pub use mailbox::{
     AttestResult, RegisterResult, SecureMailboxClient, SecureMailboxHandler, SendResult,
 };
 pub use session::{
-    DeliveryOutcome, DeliverySink, Reply, SessionState, UserDirectory, ZsmptSession,
+    DeliveryOutcome, DeliverySink, Keyring, Reply, SessionState, TrustState, UserDirectory,
+    ZsmptSession,
 };
 pub use status::{Status, StatusCode};

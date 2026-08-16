@@ -57,6 +57,34 @@ pub trait UserDirectory: Send + Sync {
     fn user_exists(&self, username: &str) -> bool;
 }
 
+/// Sender trust state for a received message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustState {
+    /// Sender key matches the recipient's keyring.
+    Trusted,
+    /// Sender key present but mismatched, or signature failed.
+    Untrusted,
+    /// No key / no keyring entry.
+    Unverified,
+}
+
+impl TrustState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TrustState::Trusted => "trusted",
+            TrustState::Untrusted => "untrusted",
+            TrustState::Unverified => "unverified",
+        }
+    }
+}
+
+/// A per-user keyring of trusted senders. Implemented by the daemon; the
+/// protocol layer queries it to compute delivery trust states.
+pub trait Keyring: Send + Sync {
+    /// The trust state for a sender in a user's keyring.
+    fn state(&self, user_id: i64, sender_mailbox: &str) -> TrustState;
+}
+
 /// A reply to a client command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {

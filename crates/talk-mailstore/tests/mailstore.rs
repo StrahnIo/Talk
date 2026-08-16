@@ -303,3 +303,68 @@ fn message_stores_sender() {
     assert_eq!(list[0].sender, "alice@example.org");
     assert_eq!(list[0].trust_state, "unverified");
 }
+
+#[test]
+fn keyring_pin_and_lookup() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "kr");
+    // Not pinned yet.
+    assert!(
+        store
+            .keyring_sender_key(user_id, "alice@example.org")
+            .expect("lookup")
+            .is_none()
+    );
+    // Pin.
+    store
+        .keyring_set_trusted(user_id, "alice@example.org", "pubkey-hex", b"attestation")
+        .expect("pin");
+    assert_eq!(
+        store
+            .keyring_sender_key(user_id, "alice@example.org")
+            .expect("lookup")
+            .as_deref(),
+        Some("pubkey-hex")
+    );
+    // Different user's keyring is independent.
+    let other = make_user(&store, "kr2");
+    assert!(
+        store
+            .keyring_sender_key(other, "alice@example.org")
+            .expect("lookup")
+            .is_none()
+    );
+}
+
+#[test]
+fn keyring_pin_updates_existing() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "kr3");
+    store
+        .keyring_set_trusted(user_id, "bob@example.org", "key1", b"att1")
+        .expect("pin1");
+    store
+        .keyring_set_trusted(user_id, "bob@example.org", "key2", b"att2")
+        .expect("pin2");
+    assert_eq!(
+        store
+            .keyring_sender_key(user_id, "bob@example.org")
+            .expect("lookup")
+            .as_deref(),
+        Some("key2"),
+        "re-pin must update the key"
+    );
+}
+
+#[test]
+fn message_trust_state_roundtrip() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "ts");
+    let mut msg = NewMessage::invoice("m1", "s", b"b".to_vec());
+    msg.sender = "alice@example.org".to_string();
+    msg.trust_state = "trusted".to_string();
+    store.append_message(user_id, msg).expect("append");
+    let list = store.list_messages(user_id).expect("list");
+    assert_eq!(list[0].sender, "alice@example.org");
+    assert_eq!(list[0].trust_state, "trusted");
+}

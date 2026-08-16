@@ -61,10 +61,12 @@ pub struct NewMessage {
     /// The sender mailbox (`user@domain`), stored as `From:`. Empty if
     /// anonymous.
     pub sender: String,
+    /// Sender trust state: `trusted` | `untrusted` | `unverified`.
+    pub trust_state: String,
 }
 
 impl NewMessage {
-    /// Build a new message with no sender (anonymous).
+    /// Build a new message with no sender and unverified trust.
     pub fn invoice(
         message_id: impl Into<String>,
         subject: impl Into<String>,
@@ -76,6 +78,7 @@ impl NewMessage {
             body,
             flags: MessageFlags::default(),
             sender: String::new(),
+            trust_state: "unverified".to_string(),
         }
     }
 }
