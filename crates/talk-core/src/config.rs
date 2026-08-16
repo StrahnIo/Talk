@@ -27,6 +27,9 @@ pub struct General {
 #[serde(deny_unknown_fields)]
 pub struct Network {
     pub indexer_url: String,
+    /// The ZSMTP send endpoint (recipient daemon address), e.g.
+    /// `receiver.example.org:2525`. DNS SRV discovery is a later milestone.
+    pub send_endpoint: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -114,6 +117,7 @@ mod tests {
 
             [network]
             indexer_url = "lwd.example.com:9067"
+            send_endpoint = "receiver.example.org:2525"
 
             [sockets]
             secure_mailbox = "/tmp/secure.sock"

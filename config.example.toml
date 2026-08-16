@@ -4,6 +4,7 @@ log_level = "info"
 
 [network]
 indexer_url = "lwd.example.com:9067"
+send_endpoint = "receiver.example.org:2525"
 
 [sockets]
 secure_mailbox = "/run/talk/secure_mailbox.sock"

@@ -7,6 +7,7 @@ use talk_protocol::server as zsmtp_server;
 use talk_wallet::LightwalletdClient;
 use tracing::{error, info, warn};
 
+mod secure;
 mod sink;
 
 #[derive(Debug, Parser)]
@@ -42,6 +43,35 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     let secure_mailbox = SocketListener::bind(&cfg.sockets.secure_mailbox)?;
     info!(path = %secure_mailbox.local_path().display(), "secure_mailbox.sock listening");
 
+    // Serve the local user↔daemon interface.
+    let sender_domain = cfg
+        .general
+        .data_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "talkd.local".to_string());
+    let handler = std::sync::Arc::new(secure::SecureMailboxService::new(
+        &sender_domain,
+        &cfg.network.send_endpoint,
+    ));
+    let mailbox_listener = secure_mailbox.to_tokio()?;
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match mailbox_listener.accept().await {
+                Ok(p) => p,
+                Err(e) => {
+                    error!(error = %e, "secure_mailbox accept failed");
+                    continue;
+                }
+            };
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let mut stream = stream;
+                let _ = talk_protocol::mailbox::serve(&mut stream, handler.as_ref()).await;
+            });
+        }
+    });
+
     let zsmtp = SocketListener::bind(&cfg.sockets.zsmtp)?;
     info!(path = %zsmtp.local_path().display(), "zsmtp.sock listening");
 
@@ -51,13 +81,8 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     info!(path = %mailbox_db.display(), "mailbox store open");
 
     // Serve ZSMTP sessions on the zsmtp socket, delivering into the store.
-    let zsmtp_domain = cfg
-        .general
-        .data_dir
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "talkd.local".to_string());
     let zsmtp_listener = zsmtp.to_tokio()?;
+    let zsmtp_domain = sender_domain.clone();
 
     // The stable domain signing key. Persisted so DNS-published attestations
     // verify across restarts.

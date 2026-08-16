@@ -102,6 +102,7 @@ fn config_unknown_field_rejected() {
 
         [network]
         indexer_url = "x:1"
+        send_endpoint = "y:2"
 
         [sockets]
         secure_mailbox = "/tmp/a.sock"

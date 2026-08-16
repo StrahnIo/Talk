@@ -15,14 +15,16 @@ pub mod dns;
 pub mod envelope;
 pub mod framing;
 pub mod handshake;
+pub mod mailbox;
 pub mod server;
 pub mod session;
 pub mod status;
 
 pub use attestation::{Attestation, AttestationError, AttestationMode};
-pub use client::{ClientError, ClientState, ZsmptClient};
+pub use client::{ClientError, ClientState, ZsmptClient, connect_tcp, connect_unix};
 pub use dns::{DohDomainKeyResolver, DomainKeyResolver, ResolverError, StaticDomainKeyResolver};
 pub use envelope::{Envelope, Payload, Recipient};
 pub use handshake::{Challenge, ChallengeResponse, DomainKey, HandshakeError};
+pub use mailbox::{AttestResult, SecureMailboxClient, SecureMailboxHandler, SendResult};
 pub use session::{DeliveryOutcome, DeliverySink, Reply, SessionState, ZsmptSession};
 pub use status::{Status, StatusCode};
