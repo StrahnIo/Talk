@@ -58,10 +58,16 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     // verify across restarts.
     let domain_key = sink::load_or_create_domain_key(&cfg.general.data_dir)?;
 
+    // Open the mailbox store.
+    let mailbox_db = cfg.general.data_dir.join("mailbox.db");
+    let store = Arc::new(SqliteMailStore::open(&mailbox_db)?);
+    info!(path = %mailbox_db.display(), "mailbox store open");
+
     let handler = std::sync::Arc::new(secure::SecureMailboxService::new(
         &sender_domain,
         &cfg.network.send_endpoint,
         domain_key.clone(),
+        store.clone(),
     ));
     let mailbox_listener = secure_mailbox.to_tokio()?;
     tokio::spawn(async move {
@@ -83,11 +89,6 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
 
     let zsmtp = SocketListener::bind(&cfg.sockets.zsmtp)?;
     info!(path = %zsmtp.local_path().display(), "zsmtp.sock listening");
-
-    // Open the mailbox store.
-    let mailbox_db = cfg.general.data_dir.join("mailbox.db");
-    let store = Arc::new(SqliteMailStore::open(&mailbox_db)?);
-    info!(path = %mailbox_db.display(), "mailbox store open");
 
     // Serve ZSMTP sessions on the zsmtp socket, delivering into the store.
     let zsmtp_listener = zsmtp.to_tokio()?;

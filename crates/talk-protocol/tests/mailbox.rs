@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use talk_protocol::attestation::AttestationMode;
 use talk_protocol::envelope::Payload;
 use talk_protocol::mailbox::{
-    AttestResult, SecureMailboxClient, SecureMailboxHandler, SendResult, serve,
+    AttestResult, RegisterResult, SecureMailboxClient, SecureMailboxHandler, SendResult, serve,
 };
 
 struct MockHandler {
@@ -27,6 +27,16 @@ impl SecureMailboxHandler for MockHandler {
 
     fn attest(&self, user: &str, _mode: AttestationMode) -> AttestResult {
         AttestResult::Ok(format!("attestation-for-{user}").into_bytes())
+    }
+
+    fn register(
+        &self,
+        _username: &str,
+        _password: &str,
+        _pubkey_hex: &str,
+        _ivk_hex: Option<&str>,
+    ) -> RegisterResult {
+        RegisterResult::Ok
     }
 
     fn status(&self) -> String {
@@ -123,4 +133,44 @@ async fn malformed_send_errors() {
     let n = client.read(&mut buf).await.unwrap();
     let reply = String::from_utf8_lossy(&buf[..n]);
     assert!(reply.contains("ERR malformed SEND"), "got: {reply}");
+}
+
+#[tokio::test]
+async fn register_command_reaches_handler() {
+    let (client, server) = tokio::io::duplex(8192);
+    let handler = Arc::new(MockHandler {
+        sent: Mutex::new(Vec::new()),
+    });
+    let handler2 = handler.clone();
+    tokio::spawn(async move {
+        let mut server = server;
+        let _ = serve(&mut server, handler2.as_ref()).await;
+    });
+
+    let mut c = SecureMailboxClient::new(client);
+    let reply = c
+        .register("alice", "s3cret", "abcd1234", None)
+        .await
+        .expect("register");
+    assert!(reply.starts_with("OK registered"), "got: {reply}");
+}
+
+#[tokio::test]
+async fn register_with_ivk() {
+    let (client, server) = tokio::io::duplex(8192);
+    let handler = Arc::new(MockHandler {
+        sent: Mutex::new(Vec::new()),
+    });
+    let handler2 = handler.clone();
+    tokio::spawn(async move {
+        let mut server = server;
+        let _ = serve(&mut server, handler2.as_ref()).await;
+    });
+
+    let mut c = SecureMailboxClient::new(client);
+    let reply = c
+        .register("bob", "pw", "beef", Some("cafe"))
+        .await
+        .expect("register");
+    assert!(reply.starts_with("OK registered"), "got: {reply}");
 }

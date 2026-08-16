@@ -4,8 +4,10 @@
 //! `tokio::task::spawn_blocking`. Message bodies are stored as opaque ciphertext
 //! per Model A — the store never inspects content.
 
+pub mod password;
 pub mod sqlite;
 
+pub use password::{hash_password, verify_password};
 pub use sqlite::SqliteMailStore;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,6 +19,10 @@ pub struct User {
     pub username: String,
     /// Encoded master public key (DK wrap target for compatible clients).
     pub master_pubkey: Vec<u8>,
+    /// Optional IVK commitment (dynamic-address mode). `None` = static mode.
+    pub ivk_commitment: Option<String>,
+    /// The registration attestation `R` (tamper-evident username↔pubkey binding).
+    pub registration_attestation: Option<String>,
 }
 
 /// Metadata for a message — everything the IMAP server can expose without
