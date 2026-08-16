@@ -1,4 +1,4 @@
-use talk_mailstore::{hash_password, SqliteMailStore};
+use talk_mailstore::{SqliteMailStore, hash_password};
 use talk_wallet::WalletResolver;
 
 #[test]
@@ -8,7 +8,13 @@ fn resolver_maps_username_to_wallet_binding() {
     let pubkey = [9u8; 32];
     let hash = hash_password("pw").expect("hash");
     store
-        .create_user_full("alice", &hash, &pubkey, Some("ivk-commit".to_string()), None)
+        .create_user_full(
+            "alice",
+            &hash,
+            &pubkey,
+            Some("ivk-commit".to_string()),
+            None,
+        )
         .expect("create");
 
     let resolver = WalletResolver::new(dir.path().join("wallets"), store);
@@ -17,7 +23,10 @@ fn resolver_maps_username_to_wallet_binding() {
     assert_eq!(binding.master_pubkey, pubkey);
     assert_eq!(binding.ivk_commitment.as_deref(), Some("ivk-commit"));
     let path_str = binding.wallet_db_path.to_string_lossy().to_string();
-    assert!(path_str.ends_with("/wallets/1/wallet.db"), "got: {path_str}");
+    assert!(
+        path_str.ends_with("/wallets/1/wallet.db"),
+        "got: {path_str}"
+    );
 }
 
 #[test]

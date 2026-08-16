@@ -3508,6 +3508,8 @@ version = "0.1.0"
 dependencies = [
  "prost",
  "serde",
+ "talk-mailstore",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tonic",
