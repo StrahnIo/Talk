@@ -1,0 +1,25 @@
+[package]
+name = "talkd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "talkd"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["net", "sync", "time", "rt", "macros", "signal"] }
+clap = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = { workspace = true }
+talk-core = { path = "../talk-core" }
+talk-imap = { path = "../talk-imap" }
+talk-mailstore = { path = "../talk-mailstore" }
+talk-protocol = { path = "../talk-protocol" }
+talk-wallet = { path = "../talk-wallet" }

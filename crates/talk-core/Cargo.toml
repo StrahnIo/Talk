@@ -1,0 +1,18 @@
+[package]
+name = "talk-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["net", "fs", "io-util", "sync", "time", "rt", "macros", "signal"] }
+serde = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+nix = { version = "0.30", features = ["fs", "net"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

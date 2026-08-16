@@ -1,0 +1,22 @@
+[package]
+name = "talk-imap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["net", "io-util", "sync", "time", "rt", "macros"] }
+base64 = { workspace = true }
+time = { workspace = true }
+thiserror = "2"
+tracing = { workspace = true }
+hex = "0.4"
+talk-mailstore = { path = "../talk-mailstore" }
+talk-keys = { path = "../talk-keys" }
+
+[dev-dependencies]
+talk-mailstore = { path = "../talk-mailstore" }
+talk-keys = { path = "../talk-keys" }
+tempfile = "3"
+rand = { workspace = true }
