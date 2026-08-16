@@ -7,6 +7,7 @@
 //! down.
 
 pub mod config_cmd;
+pub mod key;
 pub mod remote;
 pub mod store;
 
@@ -56,6 +57,11 @@ pub enum Command {
     Keyring {
         #[command(subcommand)]
         action: KeyringAction,
+    },
+    /// X25519 master keypair and ECIES seal/unseal.
+    Key {
+        #[command(subcommand)]
+        action: key::KeyAction,
     },
     /// Request an address attestation for a user.
     Attest {
@@ -188,6 +194,7 @@ pub fn run(cli: Cli) -> Result<(), CtlError> {
         Command::User { action } => store::user_run(config, action),
         Command::Share { action } => store::share_run(config, action),
         Command::Keyring { action } => store::keyring_run(config, action),
+        Command::Key { action } => key::run(action),
         Command::Attest { user, mode } => remote::attest(config, &user, &mode),
         Command::Send {
             sender,
