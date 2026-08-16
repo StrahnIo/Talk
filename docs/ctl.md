@@ -14,7 +14,8 @@ Two classes of commands, with different availability:
   `share`, and `keyring` open the mailbox DB and config file directly. They
   work whether or not `talkd` is running — essential for recovery and repair.
   Run them as the daemon's OS user (they need file access to the DB and domain
-  key).
+  key). `key` is pure local crypto: it needs neither the daemon nor the
+  config.
 - **Hybrid (socket-first).** `attest` and `send` prefer the running daemon's
   `secure_mailbox.sock` (single DB writer, daemon-side handling). If the daemon
   is down, they fall back to direct operation: `attest` signs with the
@@ -54,6 +55,10 @@ talkctl --config /path/to/config.toml <command>
 | `share revoke <user> <share-id>` | Revoke a share wrapper |
 | `keyring pin <user> <sender@domain> [--pubkey <hex>]` | Pin a trusted sender |
 | `keyring list <user>` / `unpin <user> <sender>` | Keyring inspect / remove |
+| `key generate [--out <file>] [--pub-out <file>] [--force]` | X25519 master keypair; prints `public:` (the value for `user create --pubkey`), writes the private key with mode 0600 |
+| `key pubkey [--key <file> | --hex <priv-hex>]` | Derive the public key from a private key file or hex |
+| `key seal --key <file> [--to <pubkey-hex>] [--in <file>] [--out <file>]` | ECIES-encrypt to a public key (default: own); stdin/stdout pipeable |
+| `key unseal --key <file> [--in <file>] [--out <file>]` | Decrypt a sealed envelope with the private key |
 | `attest <user> <ephemeral\|attested>` | Request an address attestation (socket → direct fallback) |
 | `send <sender> <recipient> <file> [--plaintext] [--message-id <id>]` | Deliver an invoice (socket → direct fallback) |
 

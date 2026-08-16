@@ -212,6 +212,44 @@ talkctl [OPTIONS] keyring unpin <USER> <SENDER@DOMAIN>
 `unpin <USER> <SENDER@DOMAIN>`
 :   Remove a pinned sender. Fails if the sender is not pinned.
 
+### key
+
+Generate an X25519 master keypair and seal/unseal data with it (ECIES). The
+master key is the user's asymmetric identity: the **public half** is what a
+compatible client publishes — and exactly what `user create --pubkey` stores
+(32 bytes of hex) — while the private half stays with the client.
+
+```
+talkctl [OPTIONS] key generate [--out <PRIVKEY-FILE>] [--pub-out <PUBKEY-FILE>]
+                       [--force]
+talkctl [OPTIONS] key pubkey [--key <PRIVKEY-FILE> | --hex <PRIVKEY-HEX>]
+talkctl [OPTIONS] key seal --key <PRIVKEY-FILE> [--to <PUBKEY-HEX>]
+                       [--in <FILE>] [--out <FILE>]
+talkctl [OPTIONS] key unseal --key <PRIVKEY-FILE> [--in <FILE>] [--out <FILE>]
+```
+
+`generate [--out <PRIVKEY-FILE>] [--pub-out <PUBKEY-FILE>] [--force]`
+:   Generate a fresh X25519 master keypair. `--out` writes the private key as
+    raw 32 bytes with mode `0600`; `--pub-out` writes the public key as raw 32
+    bytes. Always prints `public: <64-hex>` — the value for `user create
+    --pubkey`. Without `--out`, the private key is printed once
+    (`private: <64-hex>`) with a warning. Refuses to overwrite an existing
+    file unless `--force` is given.
+
+`pubkey --key <PRIVKEY-FILE> | --hex <PRIVKEY-HEX>`
+:   Derive and print the public key (64 hex) from a private key file or from
+    the private key as hex. Use this to reproduce the pubkey later.
+
+`seal --key <PRIVKEY-FILE> [--to <PUBKEY-HEX>] [--in <FILE>] [--out <FILE>]`
+:   Encrypt data to a public key (ephemeral X25519 ECDH + HKDF-SHA256 +
+    chacha20poly1305, versioned `TKS1` envelope). `--to` selects the recipient
+    public key (64 hex); omitted, it seals to the `--key`'s own public key.
+    `--in`/`--out` default to stdin/stdout, so the command is pipeable.
+
+`unseal --key <PRIVKEY-FILE> [--in <FILE>] [--out <FILE>]`
+:   Decrypt a `TKS1` envelope with the private key. A wrong key or corrupted
+    envelope fails with a clear `unseal failed` error.
+
 ### attest
 
 ```
@@ -257,6 +295,11 @@ TLS, using the config `send_endpoint` as a fallback override when SRV fails.
 `<data_dir>/run/secure_mailbox.sock`
 :   The daemon's local control socket, used by the socket-first `attest` and
     `send` paths.
+
+`<PRIVKEY-FILE>` / `<PUBKEY-FILE>`
+:   X25519 master key files written by `key generate` (raw 32 bytes each; the
+    private key is mode `0600`). `key` commands are purely local crypto and do
+    not require `--config`.
 
 ## EXIT STATUS
 
@@ -336,6 +379,30 @@ Pin and unpin a trusted sender:
 ```
 talkctl keyring pin alice bob@example.org --pubkey aabb...
 talkctl keyring unpin alice bob@example.org
+```
+
+Generate a production master keypair and register a user with it:
+
+```
+talkctl key generate --out ~/.talk/master.key
+talkctl user create alice --pubkey <the 64-hex public: line> --password ...
+```
+
+Seal a file to another party's public key and let them decrypt it:
+
+```
+talkctl key pubkey --key ~/.talk/master.key          # your public key
+talkctl key seal --key ~/.talk/master.key --to <their-pubkey-hex> \
+    --input invoice.bin --output invoice.sealed
+talkctl key unseal --key ~/.talk/master.key --input invoice.sealed \
+    --output invoice.bin
+```
+
+Encrypt/decrypt in a pipe:
+
+```
+echo -n "secret" | talkctl key seal --key ~/.talk/master.key | \
+  talkctl key unseal --key ~/.talk/master.key
 ```
 
 Request an attestation (daemon up: via socket; daemon down: direct):
