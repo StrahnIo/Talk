@@ -153,8 +153,7 @@ fn fetch_returns_body_literal() {
     s.handle(&parse_cmd("A2 SELECT INBOX"));
 
     let out = s.handle(&parse_cmd("A3 FETCH 1 BODY[]"));
-    assert!(out.contains("* 1 FETCH (FLAGS () UID 1 RFC822.SIZE 15)"));
-    assert!(out.contains("BODY[] {15}"));
+    assert!(out.contains("* 1 FETCH (FLAGS () UID 1 RFC822.SIZE 15 BODY[] {15}"));
     assert!(out.contains("ciphertext-blob"));
     assert!(out.contains("A3 OK FETCH completed"));
 }
@@ -482,4 +481,54 @@ fn fetch_range_star() {
     let out = s.handle(&parse_cmd("A3 FETCH * BODY[]"));
     assert!(out.contains("* 1 FETCH"));
     assert!(out.contains("A3 OK FETCH completed"));
+}
+
+#[test]
+fn namespace_returns_default() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 NAMESPACE"));
+    assert!(
+        out.contains("NAMESPACE ((\"\" \"/\")) NIL NIL"),
+        "got: {out}"
+    );
+    assert!(out.contains("A2 OK NAMESPACE completed"));
+}
+
+#[test]
+fn status_reports_counts() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 STATUS INBOX (MESSAGES UNSEEN)"));
+    assert!(out.contains("MESSAGES 1"), "got: {out}");
+    assert!(out.contains("UNSEEN 1"), "got: {out}");
+    assert!(out.contains("A2 OK STATUS completed"));
+}
+
+#[test]
+fn status_nonexistent_mailbox() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 STATUS NOSUCH (MESSAGES)"));
+    assert!(out.contains("A2 NO"));
+}
+
+#[test]
+fn unsupported_command_is_no_not_bad() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 MOVE 1 INBOX"));
+    assert!(out.contains("A2 NO command not supported"), "got: {out}");
+}
+
+#[test]
+fn capability_advertises_namespace() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    let out = s.handle(&parse_cmd("A1 CAPABILITY"));
+    assert!(out.contains("NAMESPACE"), "got: {out}");
 }

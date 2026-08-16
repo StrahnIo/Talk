@@ -38,6 +38,8 @@ impl Session {
             "LOGIN" | "AUTHENTICATE" => self.cmd_auth(tag, cmd),
             "SELECT" | "EXAMINE" => self.cmd_select(tag, cmd),
             "LIST" => self.cmd_list(tag, cmd),
+            "NAMESPACE" => self.cmd_namespace(tag),
+            "STATUS" => self.cmd_status(tag, cmd),
             "FETCH" => self.cmd_fetch(tag, cmd),
             "UID" => self.cmd_uid(tag, cmd),
             "STORE" => self.cmd_store(tag, cmd),
@@ -45,12 +47,18 @@ impl Session {
             "EXPUNGE" => self.cmd_expunge(tag),
             "CLOSE" => self.cmd_close(tag),
             "IDLE" => self.cmd_idle(tag),
+            // Unsupported-but-known commands: reply NO (graceful degradation)
+            // rather than BAD (protocol error), so clients fall back cleanly.
+            "APPEND" | "COPY" | "MOVE" | "SORT" | "THREAD" | "CREATE" | "DELETE" | "RENAME"
+            | "SUBSCRIBE" | "UNSUBSCRIBE" | "LSUB" | "CHECK" | "LANGUAGE" => {
+                response::tagged(tag, Status::No, "command not supported")
+            }
             _ => response::tagged(tag, Status::Bad, "Unknown command"),
         }
     }
 
     fn cmd_capability(&self, tag: &str) -> String {
-        let mut out = response::untagged("CAPABILITY IMAP4rev1 IDLE AUTH=PLAIN");
+        let mut out = response::untagged("CAPABILITY IMAP4rev1 IDLE NAMESPACE AUTH=PLAIN");
         out.push_str(&response::tagged(tag, Status::Ok, "CAPABILITY completed"));
         out
     }
@@ -205,6 +213,42 @@ impl Session {
         out
     }
 
+    fn cmd_namespace(&self, tag: &str) -> String {
+        if self.state == State::NotAuthenticated {
+            return response::tagged(tag, Status::Bad, "Not authenticated");
+        }
+        let mut out = response::untagged(r#"NAMESPACE (("" "/")) NIL NIL"#);
+        out.push_str(&response::tagged(tag, Status::Ok, "NAMESPACE completed"));
+        out
+    }
+
+    fn cmd_status(&self, tag: &str, cmd: &ParsedCommand) -> String {
+        if self.state == State::NotAuthenticated {
+            return response::tagged(tag, Status::Bad, "Not authenticated");
+        }
+        let mailbox = cmd.args.first().map(|s| s.as_str()).unwrap_or("");
+        if !mailbox.eq_ignore_ascii_case("INBOX") {
+            return response::tagged(tag, Status::No, "Mailbox does not exist");
+        }
+        let messages = match self.store.list_messages(self.user_id) {
+            Ok(m) => m,
+            Err(e) => return self.store_err(tag, e),
+        };
+        let messages_count = messages.len();
+        let unseen = messages.iter().filter(|m| !m.flags.is_seen()).count();
+        let uidnext = self
+            .store
+            .uidnext(self.user_id)
+            .unwrap_or((messages_count as u32) + 1);
+        let uidvalidity = messages.first().map(|m| m.uidvalidity).unwrap_or(1);
+        let mut out = response::untagged(&format!(
+            "STATUS \"{}\" (MESSAGES {messages_count} UNSEEN {unseen} UIDNEXT {uidnext} UIDVALIDITY {uidvalidity})",
+            mailbox
+        ));
+        out.push_str(&response::tagged(tag, Status::Ok, "STATUS completed"));
+        out
+    }
+
     fn cmd_fetch(&mut self, tag: &str, cmd: &ParsedCommand) -> String {
         if self.state != State::Selected {
             return response::tagged(tag, Status::Bad, "No mailbox selected");
@@ -313,10 +357,17 @@ impl Session {
             if let Err(e) = self.store.set_flags(self.user_id, meta.id, mask, value) {
                 return self.store_err(tag, e);
             }
+            // Reflect the *updated* flag state in the response.
+            let mut new_flags = meta.flags;
+            if value {
+                new_flags.insert(mask);
+            } else {
+                new_flags.remove(mask);
+            }
             out.push_str(&response::untagged(&format!(
                 "{} FETCH (FLAGS ({}))",
                 meta.uid,
-                flags_display(meta.flags)
+                flags_display(new_flags)
             )));
         }
         out.push_str(&response::tagged(tag, Status::Ok, "STORE completed"));
@@ -341,11 +392,13 @@ impl Session {
         } else {
             cmd.args.iter().collect()
         };
-        let mut all = true;
+        // No criteria means ALL; `ALL` explicitly matches everything. Any
+        // other criterion (UNSEEN, etc.) restricts.
+        let mut all = args.is_empty();
         let mut unseen = false;
         for a in &args {
             match a.to_ascii_uppercase().as_str() {
-                "ALL" => {}
+                "ALL" => all = true,
                 "UNSEEN" => unseen = true,
                 _ => all = false,
             }
@@ -466,21 +519,119 @@ fn join_uids(uids: &[u32]) -> String {
         .join(" ")
 }
 
-fn fetch_response(meta: &talk_mailstore::MessageMeta, _items: &str, body: &[u8]) -> String {
+fn fetch_response(meta: &talk_mailstore::MessageMeta, items: &str, body: &[u8]) -> String {
     let flags_str = flags_display(meta.flags);
+    let items_upper = items.to_ascii_uppercase();
+
+    // Build the item list. Always include FLAGS/UID/RFC822.SIZE if requested or
+    // if no specific body items are requested (clients ask for a superset).
+    let want_all = items_upper.is_empty() || items_upper == "*";
+    let want_body = want_all
+        || items_upper.contains("BODY")
+        || items_upper.contains("BODYSTRUCTURE")
+        || items_upper.contains("RFC822");
+
+    let mut parts: Vec<String> = Vec::new();
+
+    // When a body is requested, always include the standard trio (FLAGS, UID,
+    // RFC822.SIZE) — what real clients expect and RFC 3501 §6.4.5 permits.
+    let with_trio = want_all
+        || want_body
+        || items_upper.contains("FLAGS")
+        || items_upper.contains("UID")
+        || items_upper.contains("RFC822.SIZE");
+
+    if with_trio || items_upper.contains("FLAGS") {
+        parts.push(format!("FLAGS ({flags_str})"));
+    }
+    if with_trio || items_upper.contains("UID") {
+        parts.push(format!("UID {}", meta.uid));
+    }
+    if with_trio || items_upper.contains("RFC822.SIZE") {
+        parts.push(format!("RFC822.SIZE {}", body.len()));
+    }
+    if want_all || items_upper.contains("INTERNALDATE") {
+        parts.push(format!(
+            "INTERNALDATE \"{}\"",
+            format_internaldate(meta.internaldate)
+        ));
+    }
+    if want_all || items_upper.contains("ENVELOPE") {
+        parts.push(format!(
+            "ENVELOPE ({})",
+            envelope_response(&meta.message_id, &meta.subject)
+        ));
+    }
+    if want_all || items_upper.contains("BODYSTRUCTURE") {
+        parts.push(format!(
+            "BODYSTRUCTURE (\"text\" \"plain\" NIL NIL NIL NIL {} {})",
+            body.len(),
+            1
+        ));
+    }
+
+    // BODY[] / BODY.PEEK[] — the payload literal is the LAST item in the list.
+    if want_body {
+        parts.push(format!("BODY[] {{{}}}", body.len()));
+    }
+
+    // Emit a single untagged FETCH response carrying all requested items. The
+    // body literal is the last item in the parenthesized list: the closing `)`
+    // comes after the literal data.
     let mut out = String::new();
-    out.push_str(&response::untagged(&format!(
-        "{} FETCH (FLAGS ({}) UID {} RFC822.SIZE {})",
-        meta.uid, flags_str, meta.uid, meta.size
-    )));
-    out.push_str(&response::untagged(&format!(
-        "{} FETCH (BODY[] {{{}}})",
-        meta.uid,
-        body.len()
-    )));
-    out.push('\r');
-    out.push('\n');
-    out.push_str(&String::from_utf8_lossy(body));
-    out.push_str("\r\n.\r\n");
+    let header = if want_body {
+        // Header is `* N FETCH (... BODY[] {n}` — no closing paren yet; the
+        // `untagged` helper appends the CRLF that follows the `{n}` marker.
+        format!("{} FETCH ({}", meta.uid, parts.join(" "))
+    } else {
+        format!("{} FETCH ({})", meta.uid, parts.join(" "))
+    };
+    out.push_str(&response::untagged(&header));
+    if want_body {
+        out.push_str(&String::from_utf8_lossy(body));
+        // The closing paren follows the literal data immediately (per
+        // imap_proto's literal parsing).
+        out.push_str(")\r\n");
+    }
     out
+}
+
+/// Format an internal date as `dd-Mon-yyyy hh:mm:ss +ZZZZ` (RFC 3501 date-time).
+fn format_internaldate(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or(std::time::Duration::ZERO)
+        .as_secs() as i64;
+    use time::macros::format_description;
+    let fmt = format_description!(
+        "[day padding:zero]-[month repr:short]-[year] [hour]:[minute]:[second] +0000"
+    );
+    let offset = time::UtcOffset::UTC;
+    match time::OffsetDateTime::from_unix_timestamp(secs) {
+        Ok(dt) => dt
+            .to_offset(offset)
+            .format(&fmt)
+            .unwrap_or_else(|_| "01-Jan-1970 00:00:00 +0000".to_string()),
+        Err(_) => "01-Jan-1970 00:00:00 +0000".to_string(),
+    }
+}
+
+/// Build the IMAP `envelope` struct from the stored message fields.
+///
+/// We store subject + message-id; From/To/Date are synthesized from the domain
+/// as placeholders (the mailbox is an opaque-invoice store).
+fn envelope_response(message_id: &str, subject: &str) -> String {
+    let date = "16-Aug-2026 00:00:00 +0000";
+    let subject = response::quote(subject);
+    let sender = "NIL";
+    let from = "NIL";
+    let reply_to = "NIL";
+    let to = "NIL";
+    let cc = "NIL";
+    let bcc = "NIL";
+    let in_reply_to = "NIL";
+    let message_id = response::quote(message_id);
+    format!(
+        "{date} {subject} {sender} {from} {reply_to} {to} {cc} {bcc} {in_reply_to} {message_id}"
+    )
 }

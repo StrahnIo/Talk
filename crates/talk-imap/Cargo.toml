@@ -7,6 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 tokio = { workspace = true, features = ["net", "io-util", "sync", "time", "rt", "macros"] }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = "2"
 base64 = { workspace = true }
 time = { workspace = true }
 thiserror = "2"
@@ -20,3 +23,7 @@ talk-mailstore = { path = "../talk-mailstore" }
 talk-keys = { path = "../talk-keys" }
 tempfile = "3"
 rand = { workspace = true }
+async-imap = "0.11"
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
+rcgen = "0.14"

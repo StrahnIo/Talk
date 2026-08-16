@@ -37,7 +37,7 @@ pub fn continuation(text: &str) -> String {
 
 /// The greeting banner sent on connection.
 pub fn greeting(hostname: &str) -> String {
-    format!("* OK [CAPABILITY IMAP4rev1 IDLE AUTH=PLAIN] {hostname} Talk IMAP ready\r\n")
+    format!("* OK [CAPABILITY IMAP4rev1 IDLE NAMESPACE AUTH=PLAIN] {hostname} Talk IMAP ready\r\n")
 }
 
 /// Render a status message from a parse error.
