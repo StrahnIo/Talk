@@ -18,6 +18,7 @@ sender keyring). Documents capture what is decided, built, and open.
 | [`imap.md`](imap.md) | Hand-rolled IMAP mailbox server: subset, framing, schema, auth, testing |
 | [`security.md`](security.md) | Model A, server-blind (no IVK), DK wrapper ladder, app passwords, trust boundaries |
 | [`attestation.md`](attestation.md) | Registration/live attestation (R/L), dynamic addresses, sender keyring |
+| [`ctl.md`](ctl.md) | `talkctl` CLI: accounts, shares, keyring, settings, config |
 | [`plugins.md`](plugins.md) | Layer-2 plugin ideas: proof-of-funds, loyalty proofs, and more |
 | [`decisions.md`](decisions.md) | Decision log (D1–D26), open questions, grant/ZIP positioning |
 

@@ -20,6 +20,10 @@ lint:
 run:
     cargo run -p talkd -- --config config.example.toml
 
+# Run the account/settings CLI against config.toml
+ctl *args:
+    cargo run -q -p talk-ctl -- --config config.toml {{args}}
+
 # Format everything (non-check)
 fmt:
     cargo fmt --all
