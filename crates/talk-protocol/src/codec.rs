@@ -5,7 +5,7 @@
 //! - `HELLO <domain>`                       — greet (like SMTP `EHLO`)
 //! - `AUTH <challenge-b64>`                 — server auth (challenge blob)
 //! - `ADDR <ephemeral|attested> <user>`     — request an address attestation
-//! - `INVOICE <message-id> <payload-type>`  — deliver a sealed invoice (blob)
+//! - `INVOICE <sender-user> <message-id> <payload-type>` — deliver a sealed invoice (blob)
 //! - `STATUS <code> <message>`              — server replies
 //! - `QUIT`                                 — end session
 
@@ -27,6 +27,9 @@ pub enum Command {
         user: String,
     },
     Invoice {
+        /// The sending user's username (the authorizing user; the domain is
+        /// the authenticated peer domain).
+        sender: String,
         message_id: String,
         payload: Payload,
         body: Vec<u8>,
@@ -69,6 +72,7 @@ pub fn encode_line(cmd: &Command) -> Result<String, CodecError> {
             Ok(format!("ADDR {mode} {user}"))
         }
         Command::Invoice {
+            sender,
             message_id,
             payload,
             ..
@@ -77,7 +81,7 @@ pub fn encode_line(cmd: &Command) -> Result<String, CodecError> {
                 Payload::Sealed => "sealed",
                 Payload::Plaintext => "plaintext",
             };
-            Ok(format!("INVOICE {message_id} {payload}"))
+            Ok(format!("INVOICE {sender} {message_id} {payload}"))
         }
         Command::Status { code, message } => Ok(format!("STATUS {code} {message}")),
         Command::Quit => Ok("QUIT".to_string()),
@@ -123,18 +127,19 @@ pub fn decode_line(line: &str) -> Result<Command, CodecError> {
             })
         }
         "INVOICE" => {
-            let message_id = parts
-                .next()
-                .ok_or_else(|| CodecError::Malformed(line.into()))?;
-            let payload = parts
-                .next()
-                .ok_or_else(|| CodecError::Malformed(line.into()))?;
-            let payload = match payload.to_ascii_lowercase().as_str() {
+            let tokens: Vec<&str> = line.split_whitespace().collect();
+            if tokens.len() != 4 {
+                return Err(CodecError::Malformed(line.into()));
+            }
+            let sender = tokens[1];
+            let message_id = tokens[2];
+            let payload = match tokens[3].to_ascii_lowercase().as_str() {
                 "sealed" => Payload::Sealed,
                 "plaintext" => Payload::Plaintext,
                 _ => return Err(CodecError::Malformed(line.into())),
             };
             Ok(Command::Invoice {
+                sender: sender.to_string(),
                 message_id: message_id.to_string(),
                 payload,
                 body: Vec::new(),
@@ -228,12 +233,13 @@ mod tests {
     #[test]
     fn invoice_roundtrip() {
         let c = Command::Invoice {
+            sender: "alice".into(),
             message_id: "msg-42".into(),
             payload: Payload::Sealed,
             body: Vec::new(),
         };
         let line = encode_line(&c).unwrap();
-        assert_eq!(line, "INVOICE msg-42 sealed");
+        assert_eq!(line, "INVOICE alice msg-42 sealed");
         assert_eq!(decode_line(&line).unwrap(), c);
     }
 
@@ -284,10 +290,11 @@ mod tests {
 
     #[test]
     fn invoice_accepts_lowercase_payload() {
-        let back = decode_line("INVOICE mid plaintext").unwrap();
+        let back = decode_line("INVOICE alice mid plaintext").unwrap();
         assert_eq!(
             back,
             Command::Invoice {
+                sender: "alice".into(),
                 message_id: "mid".into(),
                 payload: Payload::Plaintext,
                 body: Vec::new(),

@@ -142,10 +142,11 @@ impl ZsmptSession {
             Command::Auth { challenge } => self.on_auth(challenge),
             Command::Addr { mode, user } => self.on_addr(*mode, user),
             Command::Invoice {
+                sender,
                 message_id,
                 payload,
                 body,
-            } => self.on_invoice(message_id, *payload, body),
+            } => self.on_invoice(sender, message_id, *payload, body),
             Command::Status { .. } => {
                 Err(SessionError::State("unexpected STATUS from client".into()))
             }
@@ -298,6 +299,7 @@ impl ZsmptSession {
 
     fn on_invoice(
         &mut self,
+        sender_user: &str,
         message_id: &str,
         payload: crate::envelope::Payload,
         body: &[u8],
@@ -320,7 +322,7 @@ impl ZsmptSession {
                 "INVOICE requires a prior ADDR",
             )));
         };
-        let Some(sender) = self.peer_domain.clone() else {
+        let Some(sender_domain) = self.peer_domain.clone() else {
             return Ok(Reply::Status(Status::new(
                 StatusCode::BAD_SEQUENCE,
                 "INVOICE requires a sender",
@@ -334,7 +336,8 @@ impl ZsmptSession {
             )));
         };
         let mailbox = format!("{recipient_user}@{}", self.domain);
-        match sink.deliver(&sender, message_id, &mailbox, payload, body) {
+        let sender_mailbox = format!("{sender_user}@{sender_domain}");
+        match sink.deliver(&sender_mailbox, message_id, &mailbox, payload, body) {
             DeliveryOutcome::Accepted { message_id } => Ok(Reply::Status(Status::new(
                 StatusCode::OK_QUEUED,
                 format!("accepted into inbox ({message_id})"),
@@ -534,6 +537,7 @@ mod tests {
         .unwrap();
         let reply = s
             .handle(&Command::Invoice {
+                sender: "alice".into(),
                 message_id: "m1".into(),
                 payload: crate::envelope::Payload::Sealed,
                 body: vec![1, 2, 3],
@@ -555,6 +559,7 @@ mod tests {
         .unwrap();
         let reply = s
             .handle(&Command::Invoice {
+                sender: "alice".into(),
                 message_id: "m1".into(),
                 payload: crate::envelope::Payload::Sealed,
                 body: vec![1, 2, 3],
@@ -574,6 +579,7 @@ mod tests {
         let mut s = authenticated_session();
         let reply = s
             .handle(&Command::Invoice {
+                sender: "alice".into(),
                 message_id: "m1".into(),
                 payload: crate::envelope::Payload::Sealed,
                 body: vec![1, 2, 3],
@@ -622,6 +628,7 @@ mod tests {
         })
         .unwrap();
         s.handle(&Command::Invoice {
+            sender: "alice".into(),
             message_id: "m42".into(),
             payload: crate::envelope::Payload::Sealed,
             body: b"blob".to_vec(),
@@ -630,7 +637,7 @@ mod tests {
 
         let calls = sink.0.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "sender.example.com");
+        assert_eq!(calls[0].0, "alice@sender.example.com");
         assert_eq!(calls[0].1, "m42");
         assert_eq!(calls[0].2, "alice@receiver.example.org");
         assert_eq!(calls[0].3, b"blob");
@@ -662,6 +669,7 @@ mod tests {
         .unwrap();
         let reply = s
             .handle(&Command::Invoice {
+                sender: "alice".into(),
                 message_id: "m1".into(),
                 payload: crate::envelope::Payload::Plaintext,
                 body: Vec::new(),
@@ -683,6 +691,7 @@ mod tests {
         .unwrap();
         let reply = s
             .handle(&Command::Invoice {
+                sender: "alice".into(),
                 message_id: String::new(),
                 payload: crate::envelope::Payload::Plaintext,
                 body: Vec::new(),
@@ -857,7 +866,9 @@ mod tests {
         let blob = read_blob(&mut client).await.unwrap();
         assert!(!blob.is_empty()); // attestation JSON
 
-        write_line(&mut client, "INVOICE m42 sealed").await.unwrap();
+        write_line(&mut client, "INVOICE alice m42 sealed")
+            .await
+            .unwrap();
         write_blob(&mut client, b"opaque-body").await.unwrap();
         let line = read_line(&mut client).await.unwrap();
         assert!(line.starts_with("250 accepted into inbox"), "got: {line}");

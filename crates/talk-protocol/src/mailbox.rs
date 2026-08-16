@@ -43,6 +43,7 @@ pub enum RegisterResult {
 pub trait SecureMailboxHandler: Send + Sync {
     fn send(
         &self,
+        sender_username: &str,
         recipient_mailbox: &str,
         message_id: &str,
         payload: Payload,
@@ -73,10 +74,12 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
             Ok(l) => l,
             Err(_) => return Ok(()),
         };
-        let mut parts = line.splitn(4, ' ');
+        let mut parts = line.splitn(5, ' ');
         let verb = parts.next().unwrap_or("").to_ascii_uppercase();
         match verb.as_str() {
             "SEND" => {
+                // SEND <sender> <recipient> <message-id> <sealed|plaintext>
+                let sender = parts.next().unwrap_or("");
                 let recipient = parts.next().unwrap_or("");
                 let message_id = parts.next().unwrap_or("");
                 let payload = match parts.next() {
@@ -94,7 +97,7 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
                         continue;
                     }
                 };
-                match handler.send(recipient, message_id, payload, &body) {
+                match handler.send(sender, recipient, message_id, payload, &body) {
                     SendResult::Ok(text) => write_line(&mut stream, &format!("OK {text}")).await?,
                     SendResult::Error(text) => {
                         write_line(&mut stream, &format!("ERR {text}")).await?
@@ -170,8 +173,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureMailboxClient<S> {
         }
     }
 
+    /// `SEND <sender> <recipient> <message-id> <payload>` + blob.
     pub async fn send(
         &mut self,
+        sender: &str,
         recipient: &str,
         message_id: &str,
         payload: Payload,
@@ -183,7 +188,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureMailboxClient<S> {
         };
         write_line(
             &mut self.stream,
-            &format!("SEND {recipient} {message_id} {payload}"),
+            &format!("SEND {sender} {recipient} {message_id} {payload}"),
         )
         .await?;
         write_blob(&mut self.stream, body).await?;

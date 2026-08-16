@@ -2,7 +2,7 @@ use std::sync::Arc;
 use talk_imap::parse::{CommandReader, ParsedCommand};
 use talk_imap::response;
 use talk_imap::session::{Session, State};
-use talk_mailstore::{MessageFlags, NewMessage, SqliteMailStore};
+use talk_mailstore::{NewMessage, SqliteMailStore};
 
 fn setup() -> (tempfile::TempDir, Arc<SqliteMailStore>, i64) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -15,12 +15,11 @@ fn setup() -> (tempfile::TempDir, Arc<SqliteMailStore>, i64) {
     store
         .append_message(
             user_id,
-            NewMessage {
-                message_id: "msg-1".to_string(),
-                subject: "New sealed invoice".to_string(),
-                body: b"ciphertext-blob".to_vec(),
-                flags: MessageFlags::default(),
-            },
+            NewMessage::invoice(
+                "msg-1".to_string(),
+                "New sealed invoice".to_string(),
+                b"ciphertext-blob".to_vec(),
+            ),
         )
         .expect("append");
     (dir, store, user_id)

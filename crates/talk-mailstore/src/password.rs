@@ -1,17 +1,13 @@
 //! Argon2 password hashing and verification.
 
+use argon2::password_hash::{SaltString, rand_core::OsRng};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use argon2::password_hash::{rand_core::OsRng, SaltString};
 
 /// Hash a password with Argon2id, returning the PHC string to store.
 pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
     let salt = SaltString::generate(&mut OsRng);
     let params = argon2::Params::default();
-    let argon2 = Argon2::new(
-        argon2::Algorithm::Argon2id,
-        argon2::Version::V0x13,
-        params,
-    );
+    let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     Ok(argon2
         .hash_password(password.as_bytes(), &salt)?
         .to_string())
@@ -21,9 +17,7 @@ pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Er
 pub fn verify_password(password: &str, hash: &str) -> Result<bool, argon2::password_hash::Error> {
     let parsed = PasswordHash::new(hash)?;
     let argon2 = Argon2::default();
-    Ok(argon2
-        .verify_password(password.as_bytes(), &parsed)
-        .is_ok())
+    Ok(argon2.verify_password(password.as_bytes(), &parsed).is_ok())
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ struct MockHandler {
 impl SecureMailboxHandler for MockHandler {
     fn send(
         &self,
+        _sender: &str,
         recipient: &str,
         message_id: &str,
         _payload: Payload,
@@ -58,14 +59,20 @@ async fn send_command_reaches_handler() {
 
     let mut c = SecureMailboxClient::new(client);
     let reply = c
-        .send("alice@example.org", "msg-1", Payload::Sealed, b"opaque")
+        .send(
+            "alice",
+            "bob@example.org",
+            "msg-1",
+            Payload::Sealed,
+            b"opaque",
+        )
         .await
         .expect("send");
     assert!(reply.starts_with("OK delivered msg-1"), "got: {reply}");
 
     let sent = handler.sent.lock().unwrap().clone();
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].0, "alice@example.org");
+    assert_eq!(sent[0].0, "bob@example.org");
     assert_eq!(sent[0].1, "msg-1");
     assert_eq!(sent[0].2, b"opaque");
 }

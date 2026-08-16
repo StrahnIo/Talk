@@ -37,6 +37,10 @@ pub struct MessageMeta {
     pub flags: MessageFlags,
     pub subject: String,
     pub size: u64,
+    /// Sender mailbox (`user@domain`), empty if anonymous.
+    pub sender: String,
+    /// Sender trust state: `trusted` | `untrusted` | `unverified`.
+    pub trust_state: String,
 }
 
 /// A full message including its opaque (ciphertext) body.
@@ -54,6 +58,26 @@ pub struct NewMessage {
     pub subject: String,
     pub body: Vec<u8>,
     pub flags: MessageFlags,
+    /// The sender mailbox (`user@domain`), stored as `From:`. Empty if
+    /// anonymous.
+    pub sender: String,
+}
+
+impl NewMessage {
+    /// Build a new message with no sender (anonymous).
+    pub fn invoice(
+        message_id: impl Into<String>,
+        subject: impl Into<String>,
+        body: Vec<u8>,
+    ) -> Self {
+        Self {
+            message_id: message_id.into(),
+            subject: subject.into(),
+            body,
+            flags: MessageFlags::default(),
+            sender: String::new(),
+        }
+    }
 }
 
 /// IMAP system flags, stored as a bitmask.

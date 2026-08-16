@@ -103,7 +103,11 @@ impl SqliteMailStore {
         )?;
         // Migrations for columns added after the initial schema.
         for (table, col, ddl) in [
-            ("users", "ivk_commitment", "ALTER TABLE users ADD COLUMN ivk_commitment TEXT"),
+            (
+                "users",
+                "ivk_commitment",
+                "ALTER TABLE users ADD COLUMN ivk_commitment TEXT",
+            ),
             (
                 "users",
                 "registration_attestation",
@@ -249,19 +253,21 @@ impl SqliteMailStore {
         let uid = uidnext;
         let internaldate = now_secs();
         let size = msg.body.len() as i64;
+        let sender = msg.sender.clone();
         guard.execute(
             "INSERT INTO messages
-             (mailbox_id, message_id, uid, internaldate, flags, subject, size, body_blob)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (mailbox_id, message_id, uid, internaldate, flags, subject, size, body_blob, sender)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 mailbox_id,
-                msg.message_id,
+                &msg.message_id,
                 uid,
                 internaldate,
                 msg.flags.bits(),
-                msg.subject,
+                &msg.subject,
                 size,
-                msg.body,
+                &msg.body,
+                &sender,
             ],
         )?;
         guard.execute(
@@ -277,6 +283,8 @@ impl SqliteMailStore {
             flags: msg.flags,
             subject: msg.subject,
             size: size as u64,
+            sender,
+            trust_state: "unverified".to_string(),
         })
     }
 
@@ -285,7 +293,7 @@ impl SqliteMailStore {
         let (mailbox_id, uidvalidity, _) = self.mailbox_row(user_id)?;
         let guard = self.lock()?;
         let mut stmt = guard.prepare(
-            "SELECT id, message_id, uid, internaldate, flags, subject, size
+            "SELECT id, message_id, uid, internaldate, flags, subject, size, sender, trust_state
              FROM messages WHERE mailbox_id = ?1
              ORDER BY uid DESC",
         )?;
@@ -337,13 +345,13 @@ impl SqliteMailStore {
         let guard = self.lock()?;
         guard
             .query_row(
-                "SELECT id, message_id, uid, internaldate, flags, subject, size, body_blob
+                "SELECT id, message_id, uid, internaldate, flags, subject, size, sender, trust_state, body_blob
                  FROM messages WHERE mailbox_id = ?1 AND id = ?2",
                 params![mailbox_id, message_id],
                 |row| {
                     Ok(Message {
                         meta: row_to_meta(row, uidvalidity),
-                        body: row.get(7)?,
+                        body: row.get(9)?,
                     })
                 },
             )
@@ -410,6 +418,8 @@ fn row_to_meta(row: &rusqlite::Row<'_>, uidvalidity: u32) -> MessageMeta {
     let flags: u32 = row.get(4).unwrap_or(0);
     let subject: String = row.get(5).unwrap_or_default();
     let size: i64 = row.get(6).unwrap_or(0);
+    let sender: String = row.get(7).unwrap_or_default();
+    let trust_state: String = row.get(8).unwrap_or_else(|_| "unverified".to_string());
     MessageMeta {
         id,
         message_id,
@@ -419,5 +429,7 @@ fn row_to_meta(row: &rusqlite::Row<'_>, uidvalidity: u32) -> MessageMeta {
         flags: MessageFlags::new(flags),
         subject,
         size: size as u64,
+        sender,
+        trust_state,
     }
 }

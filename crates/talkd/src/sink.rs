@@ -70,7 +70,7 @@ impl StoreDeliverySink {
 impl DeliverySink for StoreDeliverySink {
     fn deliver(
         &self,
-        _sender_server: &str,
+        sender_mailbox: &str,
         message_id: &str,
         recipient_mailbox: &str,
         payload: Payload,
@@ -109,6 +109,7 @@ impl DeliverySink for StoreDeliverySink {
             subject,
             body: body.to_vec(),
             flags: MessageFlags::default(),
+            sender: sender_mailbox.to_string(),
         };
 
         match self.store.append_message(user.id, msg) {

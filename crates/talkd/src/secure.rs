@@ -78,11 +78,15 @@ impl SecureMailboxService {
 impl SecureMailboxHandler for SecureMailboxService {
     fn send(
         &self,
+        sender_username: &str,
         recipient_mailbox: &str,
         message_id: &str,
         payload: Payload,
         body: &[u8],
     ) -> SendResult {
+        if sender_username.is_empty() {
+            return SendResult::Error("sender username is required".to_string());
+        }
         let outcome = tokio::runtime::Handle::current().block_on(async {
             // The receiver's domain is the part after '@' in the mailbox.
             let Some(receiver_domain) = recipient_mailbox.split('@').nth(1) else {
@@ -112,7 +116,10 @@ impl SecureMailboxHandler for SecureMailboxService {
             {
                 return Err(format!("addr: {e}"));
             }
-            if let Err(e) = client.send_invoice(message_id, payload, body).await {
+            if let Err(e) = client
+                .send_invoice(sender_username, message_id, payload, body)
+                .await
+            {
                 return Err(format!("invoice: {e}"));
             }
             let _ = client.quit().await;

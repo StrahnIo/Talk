@@ -4,7 +4,7 @@
 use futures::StreamExt;
 use std::sync::Arc;
 use talk_imap::server::{ImapServer, serve_connection};
-use talk_mailstore::{MessageFlags, NewMessage, SqliteMailStore};
+use talk_mailstore::{NewMessage, SqliteMailStore};
 use tokio::net::TcpListener;
 
 /// Seed a store with one user + one message and bind the IMAP server on an
@@ -23,12 +23,11 @@ async fn boot_server() -> (u16, Arc<SqliteMailStore>) {
     store
         .append_message(
             user_id,
-            NewMessage {
-                message_id: "msg-1".to_string(),
-                subject: "Hello from Talk".to_string(),
-                body: b"opaque-sealed-invoice-body".to_vec(),
-                flags: MessageFlags::default(),
-            },
+            NewMessage::invoice(
+                "msg-1".to_string(),
+                "Hello from Talk".to_string(),
+                b"opaque-sealed-invoice-body".to_vec(),
+            ),
         )
         .expect("append");
 
