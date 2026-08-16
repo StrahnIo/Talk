@@ -38,6 +38,8 @@ impl Session {
             "LOGIN" | "AUTHENTICATE" => self.cmd_auth(tag, cmd),
             "SELECT" | "EXAMINE" => self.cmd_select(tag, cmd),
             "LIST" => self.cmd_list(tag, cmd),
+            "NAMESPACE" => self.cmd_namespace(tag),
+            "STATUS" => self.cmd_status(tag, cmd),
             "FETCH" => self.cmd_fetch(tag, cmd),
             "UID" => self.cmd_uid(tag, cmd),
             "STORE" => self.cmd_store(tag, cmd),
@@ -45,12 +47,18 @@ impl Session {
             "EXPUNGE" => self.cmd_expunge(tag),
             "CLOSE" => self.cmd_close(tag),
             "IDLE" => self.cmd_idle(tag),
+            // Unsupported-but-known commands: reply NO (graceful degradation)
+            // rather than BAD (protocol error), so clients fall back cleanly.
+            "APPEND" | "COPY" | "MOVE" | "SORT" | "THREAD" | "CREATE" | "DELETE" | "RENAME"
+            | "SUBSCRIBE" | "UNSUBSCRIBE" | "LSUB" | "CHECK" | "LANGUAGE" => {
+                response::tagged(tag, Status::No, "command not supported")
+            }
             _ => response::tagged(tag, Status::Bad, "Unknown command"),
         }
     }
 
     fn cmd_capability(&self, tag: &str) -> String {
-        let mut out = response::untagged("CAPABILITY IMAP4rev1 IDLE AUTH=PLAIN");
+        let mut out = response::untagged("CAPABILITY IMAP4rev1 IDLE NAMESPACE AUTH=PLAIN");
         out.push_str(&response::tagged(tag, Status::Ok, "CAPABILITY completed"));
         out
     }
@@ -205,6 +213,42 @@ impl Session {
         out
     }
 
+    fn cmd_namespace(&self, tag: &str) -> String {
+        if self.state == State::NotAuthenticated {
+            return response::tagged(tag, Status::Bad, "Not authenticated");
+        }
+        let mut out = response::untagged(r#"NAMESPACE (("" "/")) NIL NIL"#);
+        out.push_str(&response::tagged(tag, Status::Ok, "NAMESPACE completed"));
+        out
+    }
+
+    fn cmd_status(&self, tag: &str, cmd: &ParsedCommand) -> String {
+        if self.state == State::NotAuthenticated {
+            return response::tagged(tag, Status::Bad, "Not authenticated");
+        }
+        let mailbox = cmd.args.first().map(|s| s.as_str()).unwrap_or("");
+        if !mailbox.eq_ignore_ascii_case("INBOX") {
+            return response::tagged(tag, Status::No, "Mailbox does not exist");
+        }
+        let messages = match self.store.list_messages(self.user_id) {
+            Ok(m) => m,
+            Err(e) => return self.store_err(tag, e),
+        };
+        let messages_count = messages.len();
+        let unseen = messages.iter().filter(|m| !m.flags.is_seen()).count();
+        let uidnext = self
+            .store
+            .uidnext(self.user_id)
+            .unwrap_or((messages_count as u32) + 1);
+        let uidvalidity = messages.first().map(|m| m.uidvalidity).unwrap_or(1);
+        let mut out = response::untagged(&format!(
+            "STATUS \"{}\" (MESSAGES {messages_count} UNSEEN {unseen} UIDNEXT {uidnext} UIDVALIDITY {uidvalidity})",
+            mailbox
+        ));
+        out.push_str(&response::tagged(tag, Status::Ok, "STATUS completed"));
+        out
+    }
+
     fn cmd_fetch(&mut self, tag: &str, cmd: &ParsedCommand) -> String {
         if self.state != State::Selected {
             return response::tagged(tag, Status::Bad, "No mailbox selected");
@@ -313,10 +357,17 @@ impl Session {
             if let Err(e) = self.store.set_flags(self.user_id, meta.id, mask, value) {
                 return self.store_err(tag, e);
             }
+            // Reflect the *updated* flag state in the response.
+            let mut new_flags = meta.flags;
+            if value {
+                new_flags.insert(mask);
+            } else {
+                new_flags.remove(mask);
+            }
             out.push_str(&response::untagged(&format!(
                 "{} FETCH (FLAGS ({}))",
                 meta.uid,
-                flags_display(meta.flags)
+                flags_display(new_flags)
             )));
         }
         out.push_str(&response::tagged(tag, Status::Ok, "STORE completed"));
