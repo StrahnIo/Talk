@@ -22,6 +22,7 @@ pub struct ImapServer {
     store: Arc<SqliteMailStore>,
     hostname: String,
     events: broadcast::Sender<MailboxEvent>,
+    tls: Option<tokio_rustls::TlsAcceptor>,
 }
 
 impl ImapServer {
@@ -31,7 +32,14 @@ impl ImapServer {
             store,
             hostname: hostname.into(),
             events,
+            tls: None,
         }
+    }
+
+    /// Enable IMAPS: wrap every accepted connection in TLS.
+    pub fn with_tls(mut self, config: Arc<rustls::ServerConfig>) -> Self {
+        self.tls = Some(tokio_rustls::TlsAcceptor::from(config));
+        self
     }
 
     /// The event sender, used by the delivery path to notify IDLE sessions.
@@ -51,14 +59,27 @@ impl ImapServer {
     /// Bind and accept connections on a TCP address.
     pub async fn listen(self, addr: &str) -> std::io::Result<()> {
         let listener = TcpListener::bind(addr).await?;
-        info!(addr = %addr, "IMAP listening");
+        info!(addr = %addr, tls = self.tls.is_some(), "IMAP listening");
         loop {
             let (stream, peer) = listener.accept().await?;
             let server = self.clone();
             info!(peer = %peer, "IMAP connection accepted");
             tokio::spawn(async move {
                 let mut stream = stream;
-                if let Err(e) = serve_connection(&mut stream, &server).await {
+                // Wrap in TLS if configured (IMAPS).
+                if let Some(acceptor) = &server.tls {
+                    match acceptor.accept(stream).await {
+                        Ok(tls_stream) => {
+                            let mut tls_stream = tls_stream;
+                            if let Err(e) = serve_connection(&mut tls_stream, &server).await {
+                                warn!(error = %e, "IMAP TLS connection closed with error");
+                            }
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "IMAP TLS handshake failed");
+                        }
+                    }
+                } else if let Err(e) = serve_connection(&mut stream, &server).await {
                     warn!(error = %e, "IMAP connection closed with error");
                 }
             });
@@ -72,6 +93,7 @@ impl Clone for ImapServer {
             store: self.store.clone(),
             hostname: self.hostname.clone(),
             events: self.events.clone(),
+            tls: self.tls.clone(),
         }
     }
 }
