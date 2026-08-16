@@ -24,6 +24,8 @@ pub struct ImapServer {
     events: broadcast::Sender<MailboxEvent>,
     tls: Option<tokio_rustls::TlsAcceptor>,
     auth_mode: crate::session::AuthMode,
+    /// The daemon's local domain; login accepts `user@<domain>` for it.
+    domain: String,
 }
 
 impl ImapServer {
@@ -35,7 +37,14 @@ impl ImapServer {
             events,
             tls: None,
             auth_mode: crate::session::AuthMode::Database,
+            domain: String::new(),
         }
+    }
+
+    /// Set the daemon's local domain, enabling `user@<domain>` logins.
+    pub fn with_domain(mut self, domain: impl Into<String>) -> Self {
+        self.domain = domain.into();
+        self
     }
 
     /// Enable IMAPS: wrap every accepted connection in TLS.
@@ -62,6 +71,7 @@ impl ImapServer {
             user_id: 0,
             store: self.store.clone(),
             auth_mode: self.auth_mode,
+            domain: self.domain.clone(),
         }
     }
 
@@ -104,6 +114,7 @@ impl Clone for ImapServer {
             events: self.events.clone(),
             tls: self.tls.clone(),
             auth_mode: self.auth_mode,
+            domain: self.domain.clone(),
         }
     }
 }

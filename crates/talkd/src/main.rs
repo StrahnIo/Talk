@@ -72,7 +72,7 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     let zsmtp_listener = zsmtp.to_tokio()?;
     let zsmtp_domain = sender_domain.clone();
 
-    let mut imap = ImapServer::new(store.clone(), "talkd");
+    let mut imap = ImapServer::new(store.clone(), "talkd").with_domain(sender_domain.clone());
     // Set the user auth mode from config.
     let imap_auth = match cfg.auth.mode {
         talk_core::config::AuthMode::Database => talk_imap::AuthMode::Database,

@@ -32,6 +32,9 @@ pub struct Session {
     pub user_id: i64,
     pub store: Arc<SqliteMailStore>,
     pub auth_mode: AuthMode,
+    /// The daemon's local domain. Login accepts `user` or `user@<domain>`;
+    /// other domains are rejected.
+    pub domain: String,
 }
 
 impl Session {
@@ -122,7 +125,13 @@ impl Session {
             Some(b) => (b.to_string(), true),
             None => (username.to_string(), false),
         };
-        let Some(user) = self.store.get_user(&base).ok().flatten() else {
+        // Uniform domain support: accept a bare local part or `user@<domain>`
+        // (the configured local domain only; foreign domains are rejected).
+        let Some(local) = talk_mailstore::local_username(&base, &self.domain) else {
+            return response::tagged(tag, Status::No, "Authentication failed");
+        };
+        let local = local.to_string();
+        let Some(user) = self.store.get_user(&local).ok().flatten() else {
             return response::tagged(tag, Status::No, "Authentication failed");
         };
         if is_app {
@@ -174,7 +183,7 @@ impl Session {
         let ok = match self.auth_mode {
             AuthMode::Database => {
                 // Verify the password against the stored argon2 hash.
-                let Some(hash) = self.store.password_hash(&base).ok().flatten() else {
+                let Some(hash) = self.store.password_hash(&local).ok().flatten() else {
                     return response::tagged(tag, Status::No, "Authentication failed");
                 };
                 talk_mailstore::verify_password(password, &hash).unwrap_or(false)
@@ -182,7 +191,7 @@ impl Session {
             AuthMode::LocalAuth => {
                 // The connecting OS user must be a member of the `zsmtp` group
                 // and must match the mailbox username.
-                is_in_zsmtp_group(&base)
+                is_in_zsmtp_group(&local)
             }
         };
         if !ok {
