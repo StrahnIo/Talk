@@ -273,8 +273,9 @@ impl Session {
             .uidnext(self.user_id)
             .unwrap_or((messages_count as u32) + 1);
         let uidvalidity = messages.first().map(|m| m.uidvalidity).unwrap_or(1);
+        let recent = 0; // v1 tracks no RECENT state.
         let mut out = response::untagged(&format!(
-            "STATUS \"{}\" (MESSAGES {messages_count} UNSEEN {unseen} UIDNEXT {uidnext} UIDVALIDITY {uidvalidity})",
+            "STATUS \"{}\" (MESSAGES {messages_count} RECENT {recent} UNSEEN {unseen} UIDNEXT {uidnext} UIDVALIDITY {uidvalidity})",
             mailbox
         ));
         out.push_str(&response::tagged(tag, Status::Ok, "STATUS completed"));
@@ -291,16 +292,18 @@ impl Session {
                 if cmd.args.len() < 3 {
                     return response::tagged(tag, Status::Bad, "UID FETCH requires arguments");
                 }
-                (cmd.args[1].as_str(), cmd.args[2].as_str())
+                (cmd.args[1].clone(), cmd.args[2..].join(" "))
             }
             (_, "FETCH") | (_, "UID") => {
                 if cmd.args.is_empty() {
                     return response::tagged(tag, Status::Bad, "FETCH requires a sequence set");
                 }
-                (
-                    cmd.args[0].as_str(),
-                    cmd.args.get(1).map(String::as_str).unwrap_or("BODY[]"),
-                )
+                let items = if cmd.args.len() >= 2 {
+                    cmd.args[1..].join(" ")
+                } else {
+                    "BODY[]".to_string()
+                };
+                (cmd.args[0].clone(), items)
             }
             _ => return response::tagged(tag, Status::Bad, "FETCH requires a sequence set"),
         };
@@ -308,21 +311,24 @@ impl Session {
             Ok(m) => m,
             Err(e) => return self.store_err(tag, e),
         };
+        let req = parse_fetch_items(&items);
+        // Only sections that return the stored body need a store read.
+        let needs_body = req.body.needs_stored_body();
         let mut out = String::new();
         for meta in &messages {
-            if !in_range(range, meta.uid, messages.len() as u32) {
+            if !in_range(&range, meta.uid, messages.len() as u32) {
                 continue;
             }
-            if items.to_ascii_uppercase().contains("BODY") {
-                // Fetch the real (opaque) body from the store.
+            let body = if needs_body {
                 let msg = match self.store.fetch_message(self.user_id, meta.id) {
                     Ok(m) => m,
                     Err(e) => return self.store_err(tag, e),
                 };
-                out.push_str(&fetch_response(meta, items, &msg.body));
+                msg.body
             } else {
-                out.push_str(&fetch_response(meta, items, &[]));
-            }
+                Vec::new()
+            };
+            out.push_str(&fetch_response(meta, &req, &body));
         }
         out.push_str(&response::tagged(tag, Status::Ok, "FETCH completed"));
         out
@@ -551,80 +557,307 @@ fn join_uids(uids: &[u32]) -> String {
         .join(" ")
 }
 
-fn fetch_response(meta: &talk_mailstore::MessageMeta, items: &str, body: &[u8]) -> String {
-    let flags_str = flags_display(meta.flags);
-    let items_upper = items.to_ascii_uppercase();
+/// Which BODY section a FETCH requested.
+#[derive(Debug, Clone, Default)]
+enum BodySection {
+    /// No body item requested.
+    #[default]
+    None,
+    /// `BODY[]` — the full stored body.
+    Full,
+    /// `BODY[HEADER]` — the synthesized header block.
+    Header,
+    /// `BODY[HEADER.FIELDS (a b c)]` — a subset of the synthesized headers.
+    HeaderFields(Vec<String>),
+    /// `BODY[HEADER.FIELDS.NOT (a b c)]` — synthesized headers minus the list.
+    HeaderFieldsNot(Vec<String>),
+    /// `BODY[TEXT]` — the stored body.
+    Text,
+    /// `BODY[MIME]` — a minimal MIME part header.
+    Mime,
+    /// Any other section — served as `BODY[]` (safe default).
+    Other(String),
+}
 
-    // Build the item list. Always include FLAGS/UID/RFC822.SIZE if requested or
-    // if no specific body items are requested (clients ask for a superset).
-    let want_all = items_upper.is_empty() || items_upper == "*";
-    let want_body = want_all
-        || items_upper.contains("BODY")
-        || items_upper.contains("BODYSTRUCTURE")
-        || items_upper.contains("RFC822");
-
-    let mut parts: Vec<String> = Vec::new();
-
-    // When a body is requested, always include the standard trio (FLAGS, UID,
-    // RFC822.SIZE) — what real clients expect and RFC 3501 §6.4.5 permits.
-    let with_trio = want_all
-        || want_body
-        || items_upper.contains("FLAGS")
-        || items_upper.contains("UID")
-        || items_upper.contains("RFC822.SIZE");
-
-    if with_trio || items_upper.contains("FLAGS") {
-        parts.push(format!("FLAGS ({flags_str})"));
+impl BodySection {
+    /// Whether the response must read the stored body from the store.
+    fn needs_stored_body(&self) -> bool {
+        matches!(
+            self,
+            BodySection::Full | BodySection::Text | BodySection::Mime | BodySection::Other(_)
+        )
     }
-    if with_trio || items_upper.contains("UID") {
+
+    /// The literal marker for this section, e.g. `BODY[HEADER]`.
+    fn label(&self) -> String {
+        match self {
+            BodySection::None | BodySection::Full => "BODY[]".to_string(),
+            BodySection::Header => "BODY[HEADER]".to_string(),
+            BodySection::Text => "BODY[TEXT]".to_string(),
+            BodySection::Mime => "BODY[MIME]".to_string(),
+            BodySection::HeaderFields(fields) => {
+                format!("BODY[HEADER.FIELDS ({})]", fields.join(" "))
+            }
+            BodySection::HeaderFieldsNot(fields) => {
+                format!("BODY[HEADER.FIELDS.NOT ({})]", fields.join(" "))
+            }
+            BodySection::Other(s) => format!("BODY[{s}]"),
+        }
+    }
+
+    /// The literal bytes served for this section.
+    fn content(&self, meta: &talk_mailstore::MessageMeta, body: &[u8]) -> Vec<u8> {
+        match self {
+            BodySection::None => Vec::new(),
+            BodySection::Full | BodySection::Text | BodySection::Other(_) => body.to_vec(),
+            BodySection::Mime => b"Content-Type: text/plain\r\n".to_vec(),
+            BodySection::Header => header_lines(meta, None),
+            BodySection::HeaderFields(fields) => header_lines(meta, Some((fields, false))),
+            BodySection::HeaderFieldsNot(fields) => header_lines(meta, Some((fields, true))),
+        }
+    }
+}
+
+/// A parsed FETCH request: which items and which body section (if any).
+#[derive(Debug, Clone, Default)]
+struct FetchRequest {
+    flags: bool,
+    uid: bool,
+    size: bool,
+    internaldate: bool,
+    envelope: bool,
+    bodystructure: bool,
+    body: BodySection,
+}
+
+/// Parse the FETCH data-items token into a [`FetchRequest`].
+fn parse_fetch_items(items: &str) -> FetchRequest {
+    let mut req = FetchRequest::default();
+    let inner = items.trim();
+    let inner = if inner.starts_with('(') && inner.ends_with(')') {
+        &inner[1..inner.len() - 1]
+    } else {
+        inner
+    };
+    let upper = inner.to_ascii_uppercase();
+    if upper.is_empty() || upper == "*" {
+        // No items = the RFC 3501 "fetch all"; `*` is a client superset.
+        req.flags = true;
+        req.uid = true;
+        req.size = true;
+        req.internaldate = true;
+        req.envelope = true;
+        req.bodystructure = true;
+        req.body = BodySection::Full;
+        return req;
+    }
+    if upper == "ALL" || upper == "FULL" {
+        req.flags = true;
+        req.internaldate = true;
+        req.size = true;
+        req.envelope = true;
+        req.body = BodySection::Full;
+        return req;
+    }
+    if upper == "FAST" {
+        req.flags = true;
+        req.internaldate = true;
+        req.size = true;
+        return req;
+    }
+    let (rest, section) = extract_body_section(inner);
+    req.body = section.map_or(BodySection::None, |s| parse_body_section(&s));
+    for item in rest.split_whitespace() {
+        match item.to_ascii_uppercase().as_str() {
+            "FLAGS" => req.flags = true,
+            "UID" => req.uid = true,
+            "RFC822.SIZE" => req.size = true,
+            "INTERNALDATE" => req.internaldate = true,
+            "ENVELOPE" => req.envelope = true,
+            "BODYSTRUCTURE" => req.bodystructure = true,
+            _ => {}
+        }
+    }
+    // When a body is requested, real clients also expect the standard trio
+    // (FLAGS, UID, RFC822.SIZE) — RFC 3501 §6.4.5 permits extra items.
+    if !matches!(req.body, BodySection::None) {
+        req.flags = true;
+        req.uid = true;
+        req.size = true;
+    }
+    req
+}
+
+/// Strip a `BODY[...]`/`BODY.PEEK[...]` token out of the items, returning the
+/// remaining items and the bracket section content.
+fn extract_body_section(items: &str) -> (String, Option<String>) {
+    let bytes = items.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+    while i < n {
+        let at_boundary = i == 0
+            || bytes[i - 1].is_ascii_whitespace()
+            || bytes[i - 1] == b'('
+            || bytes[i - 1] == b'[';
+        if at_boundary && items[i..].to_ascii_uppercase().starts_with("BODY") {
+            let start = i;
+            let mut j = i + 4;
+            while j < n && bytes[j] != b'[' {
+                j += 1;
+            }
+            if j < n {
+                let mut depth = 0i32;
+                let mut k = j;
+                while k < n {
+                    match bytes[k] {
+                        b'[' => depth += 1,
+                        b']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                if k < n && depth == 0 {
+                    let section = items[j + 1..k].to_string();
+                    let mut rest = String::new();
+                    rest.push_str(&items[..start]);
+                    rest.push_str(&items[k + 1..]);
+                    return (rest, Some(section));
+                }
+            }
+        }
+        i += 1;
+    }
+    (items.to_string(), None)
+}
+
+/// Parse a BODY section string (the `[...]` content) into a [`BodySection`].
+fn parse_body_section(section: &str) -> BodySection {
+    let s = section.trim();
+    if s.is_empty() {
+        return BodySection::Full;
+    }
+    let upper = s.to_ascii_uppercase();
+    if upper == "HEADER" {
+        return BodySection::Header;
+    }
+    if upper == "TEXT" {
+        return BodySection::Text;
+    }
+    if upper == "MIME" {
+        return BodySection::Mime;
+    }
+    if upper.starts_with("HEADER.FIELDS") {
+        let is_not = upper.contains(".NOT");
+        if let Some(list) = extract_field_list(s) {
+            let fields: Vec<String> = list.split_whitespace().map(str::to_string).collect();
+            return if is_not {
+                BodySection::HeaderFieldsNot(fields)
+            } else {
+                BodySection::HeaderFields(fields)
+            };
+        }
+    }
+    BodySection::Other(s.to_string())
+}
+
+/// The `(a b c)` field list inside `HEADER.FIELDS (...)`, if present.
+fn extract_field_list(s: &str) -> Option<&str> {
+    let open = s.find('(')?;
+    let close = s.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    Some(&s[open + 1..close])
+}
+
+/// Synthesize a minimal RFC 2822 header block from the stored metadata, so
+/// clients that fetch `BODY[HEADER]` (e.g. Thunderbird's folder sync) see a
+/// proper message. `filter` is `Some((fields, negate))` for `HEADER.FIELDS`.
+fn header_lines(
+    meta: &talk_mailstore::MessageMeta,
+    filter: Option<(&[String], bool)>,
+) -> Vec<u8> {
+    let mut hdrs: Vec<(String, String)> = Vec::new();
+    if !meta.sender.is_empty() {
+        hdrs.push(("From".to_string(), meta.sender.clone()));
+    }
+    if !meta.subject.is_empty() {
+        hdrs.push(("Subject".to_string(), meta.subject.clone()));
+    }
+    hdrs.push(("Date".to_string(), format_internaldate(meta.internaldate)));
+    hdrs.push(("Message-ID".to_string(), format!("<{}>", meta.message_id)));
+    let mut out = String::new();
+    for (name, value) in &hdrs {
+        let keep = match &filter {
+            None => true,
+            Some((fields, negate)) => {
+                let listed = fields.iter().any(|f| f.eq_ignore_ascii_case(name));
+                if *negate { !listed } else { listed }
+            }
+        };
+        if keep {
+            out.push_str(&format!("{name}: {value}\r\n"));
+        }
+    }
+    out.push('\n');
+    out.into_bytes()
+}
+
+fn fetch_response(meta: &talk_mailstore::MessageMeta, req: &FetchRequest, body: &[u8]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if req.flags {
+        parts.push(format!("FLAGS ({})", flags_display(meta.flags)));
+    }
+    if req.uid {
         parts.push(format!("UID {}", meta.uid));
     }
-    if with_trio || items_upper.contains("RFC822.SIZE") {
-        parts.push(format!("RFC822.SIZE {}", body.len()));
+    if req.size {
+        // RFC822.SIZE is the stored size — never 0 when the body is unread.
+        parts.push(format!("RFC822.SIZE {}", meta.size));
     }
-    if want_all || items_upper.contains("INTERNALDATE") {
+    if req.internaldate {
         parts.push(format!(
             "INTERNALDATE \"{}\"",
             format_internaldate(meta.internaldate)
         ));
     }
-    if want_all || items_upper.contains("ENVELOPE") {
-        parts.push(format!(
-            "ENVELOPE ({})",
-            envelope_response(&meta.message_id, &meta.subject)
-        ));
+    if req.envelope {
+        parts.push(format!("ENVELOPE ({})", envelope_response(meta)));
     }
-    if want_all || items_upper.contains("BODYSTRUCTURE") {
-        parts.push(format!(
-            "BODYSTRUCTURE (\"text\" \"plain\" NIL NIL NIL NIL {} {})",
-            body.len(),
+    if req.bodystructure {
+        let lines = if body.is_empty() {
             1
+        } else {
+            body.iter().filter(|&&b| b == b'\n').count() + 1
+        };
+        parts.push(format!(
+            "BODYSTRUCTURE (\"text\" \"plain\" NIL NIL NIL NIL {} {lines})",
+            meta.size
         ));
     }
 
-    // BODY[] / BODY.PEEK[] — the payload literal is the LAST item in the list.
-    if want_body {
-        parts.push(format!("BODY[] {{{}}}", body.len()));
+    if matches!(req.body, BodySection::None) {
+        return response::untagged(&format!("{} FETCH ({})", meta.uid, parts.join(" ")));
     }
 
-    // Emit a single untagged FETCH response carrying all requested items. The
-    // body literal is the last item in the parenthesized list: the closing `)`
-    // comes after the literal data.
+    // The body literal is the LAST item in the parenthesized list: the closing
+    // `)` comes after the literal data (imap_proto requirement).
+    let label = req.body.label();
+    let content = req.body.content(meta, body);
     let mut out = String::new();
-    let header = if want_body {
-        // Header is `* N FETCH (... BODY[] {n}` — no closing paren yet; the
-        // `untagged` helper appends the CRLF that follows the `{n}` marker.
-        format!("{} FETCH ({}", meta.uid, parts.join(" "))
-    } else {
-        format!("{} FETCH ({})", meta.uid, parts.join(" "))
-    };
-    out.push_str(&response::untagged(&header));
-    if want_body {
-        out.push_str(&String::from_utf8_lossy(body));
-        // The closing paren follows the literal data immediately (per
-        // imap_proto's literal parsing).
-        out.push_str(")\r\n");
-    }
+    out.push_str(&response::untagged(&format!(
+        "{} FETCH ({} {label} {{{}}}",
+        meta.uid,
+        parts.join(" "),
+        content.len()
+    )));
+    out.push_str(&String::from_utf8_lossy(&content));
+    out.push_str(")\r\n");
     out
 }
 
@@ -650,21 +883,15 @@ fn format_internaldate(t: std::time::SystemTime) -> String {
 
 /// Build the IMAP `envelope` struct from the stored message fields.
 ///
-/// We store subject + message-id; From/To/Date are synthesized from the domain
-/// as placeholders (the mailbox is an opaque-invoice store).
-fn envelope_response(message_id: &str, subject: &str) -> String {
-    let date = "16-Aug-2026 00:00:00 +0000";
-    let subject = response::quote(subject);
-    let sender = "NIL";
-    let from = "NIL";
-    let reply_to = "NIL";
-    let to = "NIL";
-    let cc = "NIL";
-    let bcc = "NIL";
-    let in_reply_to = "NIL";
-    let message_id = response::quote(message_id);
+/// We store subject + message-id; From/To/Date are synthesized from the
+/// internal date and the stored sender label (the mailbox is an
+/// opaque-invoice store).
+fn envelope_response(meta: &talk_mailstore::MessageMeta) -> String {
+    let date = format_internaldate(meta.internaldate);
+    let subject = response::quote(&meta.subject);
+    let message_id = response::quote(&meta.message_id);
     format!(
-        "{date} {subject} {sender} {from} {reply_to} {to} {cc} {bcc} {in_reply_to} {message_id}"
+        "{date} {subject} NIL NIL NIL NIL NIL NIL NIL {message_id}"
     )
 }
 

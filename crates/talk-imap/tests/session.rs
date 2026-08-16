@@ -218,6 +218,96 @@ fn fetch_returns_body_literal() {
 }
 
 #[test]
+fn fetch_header_section_synthesizes_headers() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+
+    let out = s.handle(&parse_cmd("A3 FETCH 1 (BODY.PEEK[HEADER])"));
+    assert!(out.contains("BODY[HEADER] {"), "got: {out}");
+    assert!(out.contains("Subject: New sealed invoice"), "got: {out}");
+    assert!(out.contains("Message-ID: <msg-1>"), "got: {out}");
+    assert!(out.contains("A3 OK FETCH completed"));
+}
+
+#[test]
+fn fetch_header_fields_only_returns_listed() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+
+    let out = s.handle(&parse_cmd("A3 FETCH 1 (BODY.PEEK[HEADER.FIELDS (SUBJECT)])"));
+    assert!(out.contains("BODY[HEADER.FIELDS (SUBJECT)] {"), "got: {out}");
+    assert!(out.contains("Subject: New sealed invoice"), "got: {out}");
+    assert!(!out.contains("Message-ID"), "only listed fields: {out}");
+    assert!(out.contains("A3 OK FETCH completed"));
+}
+
+#[test]
+fn fetch_text_section_returns_body() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+
+    let out = s.handle(&parse_cmd("A3 FETCH 1 (BODY.PEEK[TEXT])"));
+    assert!(out.contains("BODY[TEXT] {15}"), "got: {out}");
+    assert!(out.contains("ciphertext-blob"), "got: {out}");
+    assert!(!out.contains("Subject:"), "text must not include headers: {out}");
+}
+
+#[test]
+fn fetch_macros_full_fast_all() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+
+    let full = s.handle(&parse_cmd("A3 FETCH 1 (FULL)"));
+    assert!(full.contains("FLAGS ()"), "got: {full}");
+    assert!(full.contains("RFC822.SIZE 15"), "got: {full}");
+    assert!(full.contains("INTERNALDATE"), "got: {full}");
+    assert!(full.contains("ENVELOPE ("), "got: {full}");
+    assert!(full.contains("BODY[] {15}"), "got: {full}");
+
+    let fast = s.handle(&parse_cmd("A4 FETCH 1 (FAST)"));
+    assert!(fast.contains("FLAGS ()"), "got: {fast}");
+    assert!(fast.contains("RFC822.SIZE 15"), "got: {fast}");
+    assert!(!fast.contains("BODY["), "FAST must not fetch body: {fast}");
+
+    let all = s.handle(&parse_cmd("A5 FETCH 1 (ALL)"));
+    assert!(all.contains("ENVELOPE ("), "got: {all}");
+    assert!(all.contains("BODY[] {15}"), "got: {all}");
+}
+
+#[test]
+fn fetch_rfc822_size_never_zero_without_body() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+
+    // RFC822.SIZE must come from the stored metadata even when the body is
+    // not read (it used to report 0).
+    let out = s.handle(&parse_cmd("A3 FETCH 1 (FLAGS RFC822.SIZE)"));
+    assert!(out.contains("RFC822.SIZE 15"), "got: {out}");
+    assert!(!out.contains("BODY["), "got: {out}");
+}
+
+#[test]
+fn status_includes_recent() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 STATUS INBOX (MESSAGES RECENT UNSEEN UIDNEXT UIDVALIDITY)"));
+    assert!(out.contains("MESSAGES 1"), "got: {out}");
+    assert!(out.contains("RECENT 0"), "got: {out}");
+    assert!(out.contains("A2 OK STATUS completed"));
+}
+
+#[test]
 fn store_marks_seen() {
     let (_dir, store, _) = setup();
     let mut s = session_with(Arc::clone(&store));

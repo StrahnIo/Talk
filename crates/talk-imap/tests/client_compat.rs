@@ -89,6 +89,41 @@ async fn login_select_fetch_logout() {
 }
 
 #[tokio::test]
+async fn fetch_sections_and_size_without_body() {
+    let (port, _store) = boot_server().await;
+    let mut session = login_session(port).await;
+    session.select("INBOX").await.expect("select");
+
+    // RFC822.SIZE must be correct even when the body is not fetched.
+    let fetches: Vec<Result<async_imap::types::Fetch, _>> = session
+        .fetch("1", "(FLAGS RFC822.SIZE)")
+        .await
+        .expect("fetch")
+        .collect()
+        .await;
+    let fetch = fetches.into_iter().next().unwrap().expect("fetch ok");
+    assert_eq!(fetch.size, Some(26), "size must come from stored metadata");
+
+    // BODY.PEEK[HEADER] must return the synthesized header block, not the
+    // full body.
+    let fetches: Vec<Result<async_imap::types::Fetch, _>> = session
+        .fetch("1", "(BODY.PEEK[HEADER])")
+        .await
+        .expect("fetch header")
+        .collect()
+        .await;
+    let fetch = fetches.into_iter().next().unwrap().expect("fetch ok");
+    let header = fetch.header().expect("header section");
+    assert!(
+        String::from_utf8_lossy(header).contains("Subject: Hello from Talk"),
+        "got: {}",
+        String::from_utf8_lossy(header)
+    );
+
+    session.logout().await.expect("logout");
+}
+
+#[tokio::test]
 async fn store_and_search_flow() {
     let (port, _store) = boot_server().await;
     let mut session = login_session(port).await;
