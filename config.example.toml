@@ -1,25 +1,79 @@
+# Talk daemon configuration
+#
+# This is a reference config: copy it to config.toml (or pass --config <path>)
+# and adjust for your machine. Every field is described below.
+
 [general]
+# Root directory for daemon data: the mailbox DB, the domain key, and wallets
+# live under here.
 data_dir = "/var/lib/talk"
+
+# Log verbosity: "trace" | "debug" | "info" | "warn" | "error".
 log_level = "info"
 
 [network]
-indexer_url = "lwd.example.com:9067"
+# The lightwalletd indexer endpoint (host:port) the daemon uses as its view of
+# chain truth. `zec.rocks:9067` is a public lightwalletd; run your own for
+# production.
+indexer_url = "zec.rocks:9067"
+
+# send_endpoint: the ADDRESS OF THE RECIPIENT DAEMON'S ZSMTP TCP LISTENER.
+#
+# This is what this daemon dials when you `SEND` an invoice to another server.
+# It must point at the *receiver's* `zsmtp_listen` address (not your own), i.e.
+# the remote daemon's host:port that speaks ZSMTP over TCP.
+#
+# Example values:
+#   - receiver.example.org:465   (remote daemon's zsmtp_listen, implicit TLS)
+#   - 127.0.0.1:1465             (a second daemon on this machine, plaintext)
+#
+# Note: v1 sends over plaintext TCP (the TLS client variant exists but is not
+# yet wired into SEND). DNS SRV discovery of the recipient's ZSMTP endpoint is
+# a later milestone — until then you configure the endpoint explicitly.
 send_endpoint = "receiver.example.org:2525"
 
 [sockets]
+# Local user<->daemon interface (register, send, attest, status). Unix socket.
 secure_mailbox = "/run/talk/secure_mailbox.sock"
+
+# Local ZSMTP daemon-to-daemon listener. Unix socket.
 zsmtp = "/run/talk/zsmtp.sock"
+
+# ZSMTP over TCP with implicit TLS (SMTPS-style, like port 465): TLS from the
+# first byte, no STARTTLS. This is what a remote daemon's `send_endpoint`
+# should point at. Needs a cert/key (see [tls]); without one it serves
+# plaintext with a warning (dev only). Port 465 requires root; use a high port
+# for testing.
 zsmtp_listen = "0.0.0.0:465"
+
+# The IMAP/IMAPS listener (the hand-rolled mailbox server). Use IMAPS on a
+# high port (e.g. 127.0.0.1:1993) when certs are configured; without certs it
+# falls back to plaintext. 1143 is the test-friendly plaintext default.
 imap_listen = "127.0.0.1:1143"
 
 [tls]
+# PEM certificate and private key, used for BOTH IMAPS and ZSMTP-over-TLS.
+# Generate a self-signed pair for dev (e.g. `openssl req -x509 ...`), or use a
+# real CA cert for production.
 cert = "/etc/talk/cert.pem"
 key = "/etc/talk/key.pem"
 
 [auth]
-mode = "database"   # or "localauth" (OS user in the zsmtp group)
+# How users authenticate to IMAP and secure_mailbox:
+#   "database"  — verify the argon2 password hash stored in the users table
+#                 (set at REGISTER time).
+#   "localauth" — the connecting OS user must be a member of the `zsmtp`
+#                 group and match their mailbox username.
+mode = "database"
 
 [mailbox]
-encrypt_db = true
+# Whether to attempt SQLCipher at-rest encryption. NOTE: currently deferred —
+# the mailbox uses plain SQLite because SQLCipher cannot coexist with
+# zcash_client_sqlite in one process. Keep false.
+encrypt_db = false
+
+# Passphrase for SQLCipher (unused while encryption is deferred).
 passphrase = "CHANGE-ME"
+
+# Directory of per-user wallet databases (`<user_id>/wallet.db`).
 wallet_dir = "/var/lib/talk/wallets"

@@ -3,3 +3,4 @@ target/
 *.sock
 *.pem
 config.toml
+.history

@@ -126,7 +126,7 @@ fn config_roundtrip_example() {
     let example = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config.example.toml");
     let cfg = Config::load(&example).expect("example config must parse");
     assert_eq!(cfg.general.log_level, "info");
-    assert!(cfg.mailbox.encrypt_db);
+    assert!(!cfg.mailbox.encrypt_db, "SQLCipher is deferred");
     assert_eq!(
         cfg.mailbox.wallet_dir,
         PathBuf::from("/var/lib/talk/wallets")
