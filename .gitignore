@@ -4,3 +4,4 @@ target/
 *.pem
 config.toml
 .history
+session*.md
