@@ -1,12 +1,14 @@
 //! The secure_mailbox handler: what the local client can ask the daemon to do.
 
-use talk_protocol::attestation::AttestationMode;
+use ed25519_dalek::SigningKey;
+use talk_protocol::attestation::{Attestation, AttestationMode, mint_pair};
 use talk_protocol::envelope::Payload;
 use talk_protocol::mailbox::{AttestResult, SecureMailboxHandler, SendResult};
 use talk_protocol::{DohDomainKeyResolver, DomainKeyResolver, connect_tcp};
 
 /// Handles secure_mailbox commands, driving `ZsmptClient` to send invoices to
-/// other daemons.
+/// other daemons, and issuing signed address attestations with the daemon's
+/// persisted domain key.
 ///
 /// v1 connects to the recipient daemon over TCP at `send_endpoint` (DNS SRV
 /// discovery is a later milestone).
@@ -17,14 +19,21 @@ pub struct SecureMailboxService {
     pub send_endpoint: String,
     /// Resolves the receiver's public domain key for verification.
     resolver: DohDomainKeyResolver,
+    /// Our domain signing key (persisted; the public half is published in DNS).
+    domain_key: SigningKey,
 }
 
 impl SecureMailboxService {
-    pub fn new(sender_domain: impl Into<String>, send_endpoint: impl Into<String>) -> Self {
+    pub fn new(
+        sender_domain: impl Into<String>,
+        send_endpoint: impl Into<String>,
+        domain_key: SigningKey,
+    ) -> Self {
         Self {
             sender_domain: sender_domain.into(),
             send_endpoint: send_endpoint.into(),
             resolver: DohDomainKeyResolver::default(),
+            domain_key,
         }
     }
 }
@@ -79,11 +88,19 @@ impl SecureMailboxHandler for SecureMailboxService {
     }
 
     fn attest(&self, user: &str, mode: AttestationMode) -> AttestResult {
-        // v1: attestations are produced by the ZSMTP server's own domain key.
-        // The local interface delegates to the stored domain key. For now, we
-        // return an error unless wired (the server session handles ADDR).
-        let _ = (user, mode);
-        AttestResult::Error("local attestation not wired yet".to_string())
+        if user.is_empty() {
+            return AttestResult::Error("attest requires a user".to_string());
+        }
+        let (address, pubkey) = mint_pair(mode);
+        let attestation = Attestation::sign(
+            &self.sender_domain,
+            user,
+            mode,
+            address,
+            pubkey,
+            &self.domain_key,
+        );
+        AttestResult::Ok(attestation.to_json().into_bytes())
     }
 
     fn status(&self) -> String {
@@ -93,5 +110,56 @@ impl SecureMailboxHandler for SecureMailboxService {
             self.sender_domain,
             self.send_endpoint
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use talk_protocol::attestation::Attestation;
+
+    fn service() -> SecureMailboxService {
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        SecureMailboxService::new("example.org", "receiver.example.org:2525", key)
+    }
+
+    #[test]
+    fn attest_produces_verifiable_signed_attestation() {
+        let svc = service();
+        let AttestResult::Ok(blob) = svc.attest("alice", AttestationMode::Ephemeral) else {
+            panic!("expected Ok");
+        };
+        let att = Attestation::from_json(&String::from_utf8(blob).unwrap()).expect("parse");
+        assert_eq!(att.domain, "example.org");
+        assert_eq!(att.user, "alice");
+        assert_eq!(att.mode, AttestationMode::Ephemeral);
+        assert_eq!(att.pubkey.len(), 64);
+        // The attestation verifies against the daemon's domain public key.
+        att.verify(&svc.domain_key.verifying_key(), "example.org")
+            .expect("must verify");
+    }
+
+    #[test]
+    fn attest_rejects_empty_user() {
+        let svc = service();
+        let AttestResult::Error(e) = svc.attest("", AttestationMode::Attested) else {
+            panic!("expected Error");
+        };
+        assert!(e.contains("requires a user"), "got: {e}");
+    }
+
+    #[test]
+    fn attest_modes_differ() {
+        let svc = service();
+        let AttestResult::Ok(a) = svc.attest("alice", AttestationMode::Ephemeral) else {
+            panic!("expected Ok");
+        };
+        let AttestResult::Ok(b) = svc.attest("alice", AttestationMode::Attested) else {
+            panic!("expected Ok");
+        };
+        let a = Attestation::from_json(&String::from_utf8(a).unwrap()).unwrap();
+        let b = Attestation::from_json(&String::from_utf8(b).unwrap()).unwrap();
+        assert_ne!(a.mode, b.mode);
+        assert_ne!(a.address, b.address, "ephemeral addresses rotate");
     }
 }
