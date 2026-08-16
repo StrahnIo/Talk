@@ -2,15 +2,16 @@ use std::sync::{Arc, Mutex};
 use talk_protocol::attestation::AttestationMode;
 use talk_protocol::envelope::Payload;
 use talk_protocol::mailbox::{
-    AttestResult, RegisterResult, SecureMailboxClient, SecureMailboxHandler, SendResult, serve,
+    AsyncSecureMailboxHandler, AttestResult, RegisterResult, SecureMailboxClient, SendResult, serve,
 };
 
 struct MockHandler {
     sent: Mutex<Vec<(String, String, Vec<u8>)>>,
 }
 
-impl SecureMailboxHandler for MockHandler {
-    fn send(
+#[async_trait::async_trait]
+impl AsyncSecureMailboxHandler for MockHandler {
+    async fn send(
         &self,
         _sender: &str,
         recipient: &str,

@@ -28,6 +28,9 @@ pub struct Auth {
 #[serde(deny_unknown_fields)]
 pub struct General {
     pub data_dir: PathBuf,
+    /// This daemon's ZSMTP domain — its public identity (greeting, domain-key
+    /// handshake, INVOICE sender half `user@<domain>`, attestation `R`).
+    pub domain: String,
     #[serde(default = "default_log_level")]
     pub log_level: String,
 }
@@ -117,6 +120,8 @@ pub enum ConfigError {
         #[source]
         source: toml::de::Error,
     },
+    #[error("invalid domain {domain:?}: must be a non-empty string without whitespace")]
+    InvalidDomain { domain: String },
 }
 
 impl Config {
@@ -127,7 +132,20 @@ impl Config {
             path: path.clone(),
             source,
         })?;
-        toml::from_str(&raw).map_err(|source| ConfigError::Parse { path, source })
+        let cfg: Config = toml::from_str(&raw).map_err(|source| ConfigError::Parse { path, source })?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// Structural validation beyond what serde enforces.
+    fn validate(&self) -> Result<(), ConfigError> {
+        let domain = self.general.domain.trim();
+        if domain.is_empty() || domain.chars().any(char::is_whitespace) {
+            return Err(ConfigError::InvalidDomain {
+                domain: self.general.domain.clone(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -140,6 +158,7 @@ mod tests {
         let example = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config.example.toml");
         let cfg = Config::load(&example).expect("example config must parse");
         assert_eq!(cfg.general.log_level, "info");
+        assert_eq!(cfg.general.domain, "talk.local");
         assert!(!cfg.mailbox.encrypt_db, "SQLCipher is deferred");
         assert_eq!(
             cfg.mailbox.wallet_dir,
@@ -152,6 +171,7 @@ mod tests {
         let raw = r#"
             [general]
             data_dir = "/tmp/talk"
+            domain = "example.org"
 
             [network]
             indexer_url = "lwd.example.com:9067"
@@ -172,6 +192,80 @@ mod tests {
         "#;
         let cfg: Config = toml::from_str(raw).expect("minimal config must parse");
         assert_eq!(cfg.general.log_level, "info");
+        assert_eq!(cfg.general.domain, "example.org");
         assert!(cfg.mailbox.encrypt_db);
+    }
+
+    #[test]
+    fn missing_domain_fails_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+                [general]
+                data_dir = "/tmp/talk"
+
+                [network]
+                indexer_url = "lwd.example.com:9067"
+                send_endpoint = ""
+
+                [sockets]
+                secure_mailbox = "/tmp/secure.sock"
+                zsmtp = "/tmp/zsmtp.sock"
+                zsmtp_listen = "127.0.0.1:1465"
+                imap_listen = "127.0.0.1:993"
+
+                [tls]
+                cert = "/tmp/cert.pem"
+                key = "/tmp/key.pem"
+
+                [mailbox]
+                wallet_dir = "/tmp/wallets"
+            "#,
+        )
+        .unwrap();
+        let err = Config::load(&path).expect_err("missing domain must fail");
+        match err {
+            ConfigError::Parse { .. } => {}
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_domain_fails_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+                [general]
+                data_dir = "/tmp/talk"
+                domain = "  "
+
+                [network]
+                indexer_url = "lwd.example.com:9067"
+                send_endpoint = ""
+
+                [sockets]
+                secure_mailbox = "/tmp/secure.sock"
+                zsmtp = "/tmp/zsmtp.sock"
+                zsmtp_listen = "127.0.0.1:1465"
+                imap_listen = "127.0.0.1:993"
+
+                [tls]
+                cert = "/tmp/cert.pem"
+                key = "/tmp/key.pem"
+
+                [mailbox]
+                wallet_dir = "/tmp/wallets"
+            "#,
+        )
+        .unwrap();
+        let err = Config::load(&path).expect_err("empty domain must fail");
+        match err {
+            ConfigError::InvalidDomain { domain } => assert_eq!(domain, "  "),
+            other => panic!("expected InvalidDomain, got {other:?}"),
+        }
     }
 }

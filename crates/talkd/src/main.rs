@@ -47,12 +47,8 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     info!(path = %secure_mailbox.local_path().display(), "secure_mailbox.sock listening");
 
     // Serve the local user↔daemon interface.
-    let sender_domain = cfg
-        .general
-        .data_dir
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "talkd.local".to_string());
+    let sender_domain = cfg.general.domain.clone();
+    info!(domain = %sender_domain, "sender domain");
 
     // The stable domain signing key. Persisted so DNS-published attestations
     // verify across restarts.
@@ -63,9 +59,14 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     let store = Arc::new(SqliteMailStore::open(&mailbox_db)?);
     info!(path = %mailbox_db.display(), "mailbox store open");
 
+    let send_override = if cfg.network.send_endpoint.is_empty() {
+        None
+    } else {
+        Some(cfg.network.send_endpoint.clone())
+    };
     let handler = std::sync::Arc::new(secure::SecureMailboxService::new(
         &sender_domain,
-        &cfg.network.send_endpoint,
+        send_override,
         domain_key.clone(),
         store.clone(),
     ));
@@ -158,6 +159,33 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
             error!(error = %e, "IMAP listener failed");
         }
     });
+
+    // UNSAFE_NO_TLS: additionally expose plaintext IMAP on 127.0.0.1:<port>.
+    // For dev / trusted networks only — no TLS, no encryption.
+    // The port defaults to 143 and can be overridden via UNSAFE_IMAP_PORT.
+    if std::env::var("UNSAFE_NO_TLS").is_ok() {
+        let port: u16 = match std::env::var("UNSAFE_IMAP_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+        {
+            Some(p) => p,
+            None => {
+                warn!(
+                    invalid = %std::env::var("UNSAFE_IMAP_PORT").unwrap_or_default(),
+                    "UNSAFE_IMAP_PORT invalid; falling back to 143"
+                );
+                143
+            }
+        };
+        let addr = format!("127.0.0.1:{port}");
+        let plain_imap = ImapServer::new(store.clone(), "talkd").with_auth_mode(imap_auth);
+        info!(addr = %addr, "UNSAFE_NO_TLS set: binding plaintext IMAP (INSECURE)");
+        tokio::spawn(async move {
+            if let Err(e) = plain_imap.listen(&addr).await {
+                error!(error = %e, addr = %addr, "plaintext IMAP listener failed");
+            }
+        });
+    }
 
     // Connect to the lightwalletd indexer. A failure here is non-fatal at boot
     // (the daemon can start without the indexer and retry), but we log it and

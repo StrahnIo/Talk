@@ -60,10 +60,36 @@ pub trait SecureMailboxHandler: Send + Sync {
     fn status(&self) -> String;
 }
 
+/// Like [`SecureMailboxHandler`], but with an async `send` (SEND performs
+/// network I/O — DNS SRV lookup + a TLS connection to the recipient daemon).
+///
+/// Keeping `send` async avoids blocking the daemon's tokio runtime, which a
+/// synchronous `block_on` would do when invoked from within a runtime.
+#[async_trait::async_trait]
+pub trait AsyncSecureMailboxHandler: Send + Sync {
+    async fn send(
+        &self,
+        sender_username: &str,
+        recipient_mailbox: &str,
+        message_id: &str,
+        payload: Payload,
+        body: &[u8],
+    ) -> SendResult;
+    fn attest(&self, user: &str, mode: crate::attestation::AttestationMode) -> AttestResult;
+    fn register(
+        &self,
+        username: &str,
+        password: &str,
+        pubkey_hex: &str,
+        ivk_hex: Option<&str>,
+    ) -> RegisterResult;
+    fn status(&self) -> String;
+}
+
 /// Run a secure_mailbox session over a stream: read commands until QUIT/EOF.
 pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
-    handler: &dyn SecureMailboxHandler,
+    handler: &dyn AsyncSecureMailboxHandler,
 ) -> Result<(), crate::framing::FramingError> {
     use crate::framing::read_blob;
     use tokio::io::BufReader;
@@ -97,7 +123,10 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
                         continue;
                     }
                 };
-                match handler.send(sender, recipient, message_id, payload, &body) {
+                let result = handler
+                    .send(sender, recipient, message_id, payload, &body)
+                    .await;
+                match result {
                     SendResult::Ok(text) => write_line(&mut stream, &format!("OK {text}")).await?,
                     SendResult::Error(text) => {
                         write_line(&mut stream, &format!("ERR {text}")).await?

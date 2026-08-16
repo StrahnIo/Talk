@@ -254,3 +254,60 @@ pub async fn connect_tcp_tls(
     let tls = connector.connect(server_name, stream).await?;
     ZsmptClient::connect(tls, sender_domain).await
 }
+
+/// An accept-any-certificate TLS client config.
+///
+/// Server *identity* in ZSMTP comes from the domain-key handshake (the
+/// receiver signs a challenge with its DNS-published key), not from the TLS
+/// certificate. TLS is encryption-only here, so any cert is accepted. This is
+/// the intended default for ZSMTP production traffic and works with
+/// self-signed certs.
+pub fn accept_any_cert_client_config() -> std::sync::Arc<rustls::ClientConfig> {
+    std::sync::Arc::new(
+        rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(AcceptAnyCert))
+            .with_no_client_auth(),
+    )
+}
+
+/// Verifier that accepts any server certificate.
+#[derive(Debug)]
+struct AcceptAnyCert;
+
+impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
+    fn verify_server_cert(
+        &self,
+        _e: &rustls::pki_types::CertificateDer<'_>,
+        _i: &[rustls::pki_types::CertificateDer<'_>],
+        _s: &rustls::pki_types::ServerName<'_>,
+        _o: &[u8],
+        _n: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+    fn verify_tls12_signature(
+        &self,
+        _m: &[u8],
+        _c: &rustls::pki_types::CertificateDer<'_>,
+        _d: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+    fn verify_tls13_signature(
+        &self,
+        _m: &[u8],
+        _c: &rustls::pki_types::CertificateDer<'_>,
+        _d: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::ED25519,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+        ]
+    }
+}

@@ -25,13 +25,18 @@ pub use attestation::{
     PlaceholderAddressProvider,
 };
 pub use client::{
-    ClientError, ClientState, ZsmptClient, connect_tcp, connect_tcp_tls, connect_unix,
+    ClientError, ClientState, ZsmptClient, accept_any_cert_client_config, connect_tcp,
+    connect_tcp_tls, connect_unix,
 };
-pub use dns::{DohDomainKeyResolver, DomainKeyResolver, ResolverError, StaticDomainKeyResolver};
+pub use dns::{
+    DohDomainKeyResolver, DohEndpointResolver, DomainKeyResolver, EndpointResolver, ResolverError,
+    SRV_SERVICE, StaticDomainKeyResolver, StaticEndpointResolver, parse_srv,
+};
 pub use envelope::{Envelope, Payload, Recipient};
 pub use handshake::{Challenge, ChallengeResponse, DomainKey, HandshakeError};
 pub use mailbox::{
-    AttestResult, RegisterResult, SecureMailboxClient, SecureMailboxHandler, SendResult,
+    AsyncSecureMailboxHandler, AttestResult, RegisterResult, SecureMailboxClient,
+    SecureMailboxHandler, SendResult,
 };
 pub use session::{
     DeliveryOutcome, DeliverySink, Keyring, Reply, SessionState, TrustState, UserDirectory,
