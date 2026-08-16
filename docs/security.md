@@ -4,10 +4,12 @@
 
 The receiving mailbox server is **blind**: it stores ciphertext only and never
 holds any key that can decrypt user data at rest. All message content is
-encrypted end-to-end between the sender and the recipient's key material. The
-server only ever decrypts *on demand* when a user deliberately supplies a share
-during an app-password session, and even then the key is held in memory and
-zeroized afterward.
+encrypted end-to-end between the sender and the recipient's key material.
+
+**The server never holds the IVK.** Decryption is the client's job — the server
+is a dumb ciphertext store. The only exception is the optional, per-user IVK
+registration that enables dynamic addresses, and even then the IVK lives inside
+a swappable `AddressProvider` boundary, not the main daemon.
 
 This is the trust model for the whole mailbox. It also resolves the
 transparent-invoice question: since the server is blind, **every** stored
@@ -46,10 +48,11 @@ are *not* derived from it — each is an independent random wrapper key.
 - Default: `n = 8` shares, generated client-side at account setup.
 - **Compatible client:** uses a share to unwrap DK locally and decrypt — fully
   server-blind.
-- **Incompatible / standard mail client:** the user accepts the risk and supplies
-  a share in the password field, appending `:app` to the username to override
-  the default password. The server unwraps DK in memory, decrypts that one
-  request, streams plaintext, and zeroizes the key.
+- **Incompatible / standard mail client:** the user supplies a share in the
+  password field, appending `:app` to the username to override the default
+  password. The server uses the share **only to authenticate** (does it unlock
+  any registered wrapper?) — it then serves ciphertext. The client decrypts
+  locally; the server never decrypts.
 
 ### Revocation
 
@@ -75,12 +78,14 @@ can be added without touching the protocol core. See the `KeyResolver` /
 The server may hold:
 
 - User **public** keys (so senders can encrypt invoices to recipients).
+- The registration attestation `R` (tamper-evident username↔pubkey binding).
+- The per-user **keyring** (trusted sender public keys + trust labels).
 - DK **wrappers** (ciphertext of DK).
 - Messages (ciphertext).
-- A transient, zeroized DK during an app-password request or re-wrap.
+- Optionally, an `ivk_commitment` (never the IVK itself).
 
-The server never holds: private keys, DK at rest, or any plaintext beyond the
-scope of an active app-password request.
+The server never holds: private keys, the IVK (unless delegated inside the
+`AddressProvider`), DK at rest, or any plaintext.
 
 ## Invoice confidentiality by mode
 
@@ -113,11 +118,18 @@ recipient's awareness is not proven.
 
 ## Known accepted risks
 
-- **App-password sessions** hand the server a share and plaintext transiently.
-  Deliberate user opt-in via the `:app` override.
+- **App-password sessions** hand the server a share; the server authenticates
+  with it but never decrypts. The share is a full key to the client-side DK.
 - **A compromised *running* daemon** sees everything a user could fetch.
   SQLCipher protects at rest, not in memory; application-layer sealing protects
   against a live operator only when the user never shares key material.
+- **Optional IVK delegation** enables dynamic addresses at the cost of letting
+  the `AddressProvider` scan/detect payments to derived addresses. Opt-in per
+  user; the IVK is isolated inside a swappable provider boundary.
+- **Keyring trust is TOFU + attested bootstrap.** Pinning happens only after the
+  client verifies the sender's server-attested key. A *malicious* sending server
+  could attest a fake key at first contact (same trust model as recipient
+  attestation); the keyring protects against subsequent key changes/DB edits.
 - **DNS / indexer trust.** The daemon trusts its lightwalletd indexer and its
   DNS resolution; a compromised resolver or indexer can misdirect or misreport
   (see O1 in [`decisions.md`](decisions.md)).

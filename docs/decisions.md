@@ -42,13 +42,13 @@ shielded address rotation and unlinkability. Discovery is federated (email-
 like), reducing the attack surface from "a general indexer which logs every
 request" to only the intended server.
 
-### D10 — IVK delegation is a server option
-The receiving server does not necessarily hold the IVK, just as the sending
-server does not necessarily hold the spending keys. Either the server holds the
-IVK (decrypts memos directly; custodial-receive, e.g. exchanges) or it is a
-dumb mailbox and the IVK owner fetches sealed invoices via an IMAP-like
-interface and decrypts locally. Default is user-held IVK; server-held IVK is an
-explicit opt-in.
+### D10 — Server never holds the IVK (resolved)
+**Resolved.** The server never holds the IVK by default — decryption is the
+client's job, and the server is a dumb ciphertext store. An optional, per-user
+IVK registration enables dynamic addresses, but the IVK lives inside a swappable
+`AddressProvider` boundary, not the main daemon. (Replaces the earlier
+"server-held IVK is an opt-in" framing: the app-password flow now uses shares
+for authentication only — the server never decrypts.)
 
 ### D11 — Deniable session, content not connection
 ECDH provides a deniable *transcript*; the fact of connection (IP, timing,
@@ -95,9 +95,38 @@ IMAPS-first (TLS on connect, 993); IDLE-only push; single INBOX per user in v1.
 
 ### D18 — Modular design via traits
 Pluggable decisions are behind Rust traits: `MailStore`, `KeyResolver`,
-`ShareScheme`, `TemplateEngine`, `Attester`. Real threshold custody (e.g. 2-of-3)
-is deferred but slots in as a `ThresholdResolver` without touching the protocol
-core.
+`ShareScheme`, `TemplateEngine`, `Attester`, `AddressProvider`. Real threshold
+custody (e.g. 2-of-3) is deferred but slots in as a `ThresholdResolver` without
+touching the protocol core.
+
+### D19 — Registration attestation `R` (tamper-evident binding)
+Created at registration, signed over `{domain, username, master_pubkey,
+[ivk_commitment], registered_at}`. `R` is the canonical source of truth;
+the live `ADDR` attestation `L` is anchored to it. Direct DB edits to a user's
+pubkey cannot yield a valid attestation (`L.pubkey ≠ R.master_pubkey`).
+
+### D20 — Client-supplied wallet pubkey at registration
+`REGISTER` takes the wallet pubkey from the client (required) and an IVK
+(optional). The server never generates or holds wallet private keys.
+
+### D21 — Auth modes: `database` | `localauth`
+`[auth] mode = database` authenticates against the SQLite users table (argon2
+hash); `localauth` authenticates against OS user accounts — the connecting user
+must be a member of the `zsmtp` group, mapped to their mailbox username.
+
+### D22 — Server-side sender keyring
+Per-user keyring of trusted senders (`sender@domain → attested pubkey`). The
+sender's attested key rides in the INVOICE envelope. Trust state computed at
+delivery: matching keyring entry → `trusted`; mismatch or bad signature →
+`untrusted` (immediate); no key/entry → `unverified`. Bootstrap is client-
+initiated (the client fetches + verifies the sender's server-attested key, then
+pins); the server never initiates lookups. Querying the keyring is a later
+milestone.
+
+### D23 — Sender identity is unverified-by-default
+Zcash does not reveal sender addresses; ZSMTP preserves this. Sender usernames
+are routing labels, not identities. The sender keyring (D22) provides *optional,
+opt-in* sender authentication — never forced linkability.
 
 ## Open questions
 
@@ -188,13 +217,16 @@ equivalent exists).
 
 ## Next steps
 
-1. Design ZSMTP protocol command set, envelope, status codes, message id, dedup,
-   retry semantics.
-2. Resolve O8 (ack deniability) — load-bearing for what the server persists.
-3. Resolve the remaining protocol questions in [`zsmtp.md`](zsmtp.md).
-4. Design secure_mailbox.sock (user-facing signing interface).
-5. Implement the hand-rolled IMAP server per [`imap.md`](imap.md).
-6. Implement the DK wrapper ladder + app-password flow per
-   [`security.md`](security.md).
-7. Draft a grant-style summary positioned around exchange-deposit +
+1. **M8a** — `REGISTER` on secure_mailbox (username, argon2 password, client
+   pubkey, optional IVK); store `R`.
+2. **M8a2** — auth modes (`database | localauth`, zsmtp group).
+3. **M8b** — `ADDR`/`INVOICE` resolve real users (unknown → `550`).
+4. **M8c** — sender identity in the envelope (`SEND` carries sender username;
+   `From:` stored).
+5. **M8d** — `talk-wallet` username↔wallet resolver.
+6. **M8e** — registration attestation `R` + anchored live `L`.
+7. **M8e2** — `AddressProvider` trait + placeholder impl; optional IVK →
+   dynamic `(d, pk_d)` addresses.
+8. **M8f** — server-side keyring + trust states on messages.
+9. Draft a grant-style summary positioned around exchange-deposit +
    proof-of-funds use cases.

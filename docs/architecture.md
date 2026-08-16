@@ -68,14 +68,20 @@ drop-in implementations.
 | Share scheme | `ShareScheme` | `PerShareWrapper` (DK wrapped per share) | real threshold SSS |
 | Message templating | `TemplateEngine` | `TeraEngine`, `LiquidEngine` | (deferred) |
 | Attestation | `Attester` | `DomainKeyAttester` | keyserver / on-ledger |
+| Address minting | `AddressProvider` | `PlaceholderAddressProvider` | `IvkAddressProvider` (owns IVK; may run on its own socket/port) |
+| Sender trust | `Keyring` | `SqliteKeyring` | anything |
 
 Key contracts:
 
-- `KeyResolver::unwrap(data_key, credential) -> Option<Dk>` — the app-password
-  path returns DK in memory; callers must zeroize.
+- `KeyResolver::unwrap(data_key, credential) -> Option<Dk>` — client-side;
+  the server never decrypts.
 - `ShareScheme::wrap(dk, shares) -> WrappedDkSet` and
   `rewrap(survivors, dk) -> WrappedDkSet` — revocation = re-wrap under
   survivors; DK never changes.
+- `AddressProvider::mint(mode) -> MintedAddress` — isolates the IVK so the
+  daemon never touches it.
+- `Keyring::state(user_id, sender_mailbox) -> TrustState` — `trusted` |
+  `untrusted` | `unverified`, computed at delivery.
 
 ## Send path (decided architecture)
 
