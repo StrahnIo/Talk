@@ -17,20 +17,19 @@ log_level = "info"
 # production.
 indexer_url = "zec.rocks:9067"
 
-# send_endpoint: the ADDRESS OF THE RECIPIENT DAEMON'S ZSMTP TCP LISTENER.
+# send_endpoint: OPTIONAL dev override for the recipient daemon's ZSMTP TCP
+# endpoint (`host:port`).
 #
-# This is what this daemon dials when you `SEND` an invoice to another server.
-# It must point at the *receiver's* `zsmtp_listen` address (not your own), i.e.
-# the remote daemon's host:port that speaks ZSMTP over TCP.
+# Normally the recipient's endpoint is discovered via DNS SRV
+# (`_zpayments._tcp.<recipient-domain>` → target + port, e.g. stygian.io →
+# payments.stygian.io:8888), and sends use implicit TLS. `send_endpoint` is
+# used ONLY when SRV lookup fails (local dev, second daemon on this machine).
+# Leave empty to rely purely on SRV discovery.
 #
 # Example values:
-#   - receiver.example.org:465   (remote daemon's zsmtp_listen, implicit TLS)
-#   - 127.0.0.1:1465             (a second daemon on this machine, plaintext)
-#
-# Note: v1 sends over plaintext TCP (the TLS client variant exists but is not
-# yet wired into SEND). DNS SRV discovery of the recipient's ZSMTP endpoint is
-# a later milestone — until then you configure the endpoint explicitly.
-send_endpoint = "receiver.example.org:2525"
+#   - "127.0.0.1:1465"     (a second daemon on this machine, no DNS)
+#   - ""                   (production: use SRV discovery)
+send_endpoint = ""
 
 [sockets]
 # Local user<->daemon interface (register, send, attest, status). Unix socket.

@@ -1,13 +1,20 @@
-//! Domain key resolution: how a client finds a server's public domain key.
+//! Domain key and endpoint resolution: how a client finds a server's public
+//! domain key and its ZSMTP TCP endpoint.
 //!
-//! The sender verifies the receiver's identity against the receiver's public
-//! domain key, published in DNS as a `_zsmtp._tcp.<domain>` TXT record (the
-//! DKIM analog). v1 resolves via Cloudflare DNS-over-HTTPS (one JSON request)
-//! or via a static in-memory map (tests / config bootstrap).
+//! Both live under a unified DNS service name, `_zpayments._tcp.<domain>`:
+//! - a **TXT** record carrying the base64 32-byte ed25519 verification key, and
+//! - an **SRV** record carrying `priority weight port target` for the daemon's
+//!   ZSMTP TCP endpoint (implicit TLS).
+//!
+//! v1 resolves via Cloudflare DNS-over-HTTPS (one JSON request per query) or
+//! via a static in-memory map (tests / config bootstrap).
 
 use ed25519_dalek::VerifyingKey;
 use std::collections::HashMap;
 use thiserror::Error;
+
+/// The unified DNS service name for ZSMTP discovery.
+pub const SRV_SERVICE: &str = "_zpayments._tcp";
 
 #[derive(Debug, Error)]
 pub enum ResolverError {
@@ -17,6 +24,8 @@ pub enum ResolverError {
     Malformed(String),
     #[error("invalid domain key: {0}")]
     InvalidKey(String),
+    #[error("no SRV record found for {0}")]
+    NoSrv(String),
     #[error("http: {0}")]
     Http(String),
 }
@@ -52,15 +61,84 @@ impl DomainKeyResolver for StaticDomainKeyResolver {
     }
 }
 
-/// Cloudflare DNS-over-HTTPS resolver.
+/// Resolves a domain to its ZSMTP TCP endpoint (`host:port`).
+pub trait EndpointResolver: Send + Sync {
+    fn resolve_endpoint(&self, domain: &str) -> Result<String, ResolverError>;
+}
+
+/// Static endpoint map: `domain -> host:port`. Used by tests and local dev.
+#[derive(Default)]
+pub struct StaticEndpointResolver {
+    endpoints: HashMap<String, String>,
+}
+
+impl StaticEndpointResolver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, domain: &str, endpoint: impl Into<String>) {
+        self.endpoints.insert(domain.to_string(), endpoint.into());
+    }
+}
+
+impl EndpointResolver for StaticEndpointResolver {
+    fn resolve_endpoint(&self, domain: &str) -> Result<String, ResolverError> {
+        self.endpoints
+            .get(domain)
+            .cloned()
+            .ok_or_else(|| ResolverError::NoSrv(domain.to_string()))
+    }
+}
+
+/// Shared DNS-over-HTTPS query client.
+struct DohClient {
+    endpoint: String,
+    agent: ureq::Agent,
+}
+
+impl DohClient {
+    fn new(endpoint: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            agent: ureq::Agent::new_with_defaults(),
+        }
+    }
+
+    /// Query DoH for answers of a given DNS type under a name.
+    fn query(&self, name: &str, r#type: &str) -> Result<Vec<String>, ResolverError> {
+        let url = format!("{}?name={name}&type={type}", self.endpoint);
+        let resp = self
+            .agent
+            .get(&url)
+            .header("Accept", "application/dns-json")
+            .call()
+            .map_err(|e| ResolverError::Http(e.to_string()))?;
+        let body = resp
+            .into_body()
+            .read_to_string()
+            .map_err(|e| ResolverError::Http(e.to_string()))?;
+        let parsed: DnsResponse =
+            serde_json::from_str(&body).map_err(|e| ResolverError::Malformed(e.to_string()))?;
+        if parsed.status != 0 {
+            return Err(ResolverError::NotFound(name.to_string()));
+        }
+        Ok(parsed
+            .answer
+            .iter()
+            .filter(|a| a.r#type == 16 || a.r#type == 33)
+            .map(|a| a.data.trim_matches('"').trim_matches('\'').to_string())
+            .collect())
+    }
+}
+
+/// Cloudflare DNS-over-HTTPS resolver for the domain key.
 ///
-/// Queries `https://cloudflare-dns.com/dns-query?name=_zsmtp._tcp.<domain>&type=TXT`
+/// Queries `https://cloudflare-dns.com/dns-query?name=_zpayments._tcp.<domain>&type=TXT`
 /// with `Accept: application/dns-json`. The first TXT record is the base64
 /// encoded 32-byte ed25519 verification key.
 pub struct DohDomainKeyResolver {
-    /// The DoH endpoint, e.g. `https://cloudflare-dns.com/dns-query`.
-    endpoint: String,
-    client: ureq::Agent,
+    client: DohClient,
 }
 
 impl Default for DohDomainKeyResolver {
@@ -72,8 +150,7 @@ impl Default for DohDomainKeyResolver {
 impl DohDomainKeyResolver {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
-            endpoint: endpoint.into(),
-            client: ureq::Agent::new_with_defaults(),
+            client: DohClient::new(endpoint),
         }
     }
 }
@@ -96,42 +173,74 @@ struct DnsAnswer {
 
 impl DomainKeyResolver for DohDomainKeyResolver {
     fn resolving_key(&self, domain: &str) -> Result<VerifyingKey, ResolverError> {
-        // Build the DoH URL.
-        let name = format!("_zsmtp._tcp.{domain}");
-        let url = format!("{}?name={}&type=TXT", self.endpoint, name);
-
-        let resp = self
-            .client
-            .get(&url)
-            .header("Accept", "application/dns-json")
-            .call()
-            .map_err(|e| ResolverError::Http(e.to_string()))?;
-
-        // Read and parse the JSON.
-        let body = resp
-            .into_body()
-            .read_to_string()
-            .map_err(|e| ResolverError::Http(e.to_string()))?;
-        let parsed: DnsResponse =
-            serde_json::from_str(&body).map_err(|e| ResolverError::Malformed(e.to_string()))?;
-
-        if parsed.status != 0 {
-            return Err(ResolverError::NotFound(domain.to_string()));
-        }
-        let record = parsed
-            .answer
-            .iter()
-            .find(|a| a.r#type == 16)
+        let name = format!("{SRV_SERVICE}.{domain}");
+        let records = self.client.query(&name, "TXT")?;
+        let record = records
+            .first()
             .ok_or_else(|| ResolverError::NotFound(domain.to_string()))?;
-
-        // TXT data is a quoted string in JSON, e.g. `"<base64>"`.
-        let data = record.data.trim_matches('"').trim_matches('\'').to_string();
-        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, record)
             .map_err(|e| ResolverError::InvalidKey(e.to_string()))?;
         let key: [u8; 32] = bytes
             .try_into()
             .map_err(|_| ResolverError::InvalidKey("expected 32 bytes".into()))?;
         VerifyingKey::from_bytes(&key).map_err(|e| ResolverError::InvalidKey(e.to_string()))
+    }
+}
+
+/// Cloudflare DNS-over-HTTPS resolver for the ZSMTP endpoint.
+///
+/// Queries `_zpayments._tcp.<domain>` for an SRV record, parses
+/// `priority weight port target`, picks the lowest priority, and returns
+/// `target:port`.
+pub struct DohEndpointResolver {
+    client: DohClient,
+}
+
+impl Default for DohEndpointResolver {
+    fn default() -> Self {
+        Self::new("https://cloudflare-dns.com/dns-query")
+    }
+}
+
+impl DohEndpointResolver {
+    pub fn new(endpoint: impl Into<String>) -> Self {
+        Self {
+            client: DohClient::new(endpoint),
+        }
+    }
+}
+
+/// Parse an SRV data string `"priority weight port target"`.
+pub fn parse_srv(data: &str) -> Option<(u16, u16, u16, String)> {
+    let mut parts = data.split_whitespace();
+    let priority: u16 = parts.next()?.parse().ok()?;
+    let weight: u16 = parts.next()?.parse().ok()?;
+    let port: u16 = parts.next()?.parse().ok()?;
+    let target = parts.next()?.to_string();
+    if target.is_empty() {
+        return None;
+    }
+    Some((priority, weight, port, target))
+}
+
+impl EndpointResolver for DohEndpointResolver {
+    fn resolve_endpoint(&self, domain: &str) -> Result<String, ResolverError> {
+        let name = format!("{SRV_SERVICE}.{domain}");
+        let records = self.client.query(&name, "SRV")?;
+        let mut best: Option<(u16, u16, u16, String)> = None;
+        for data in &records {
+            if let Some(parsed) = parse_srv(data) {
+                let better = match &best {
+                    None => true,
+                    Some((bp, _, _, _)) => parsed.0 < *bp,
+                };
+                if better {
+                    best = Some(parsed);
+                }
+            }
+        }
+        let (_, _, port, target) = best.ok_or_else(|| ResolverError::NoSrv(domain.to_string()))?;
+        Ok(format!("{target}:{port}"))
     }
 }
 
@@ -155,6 +264,42 @@ mod tests {
         assert!(matches!(
             r.resolving_key("nope.org"),
             Err(ResolverError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn parse_srv_standard() {
+        assert_eq!(
+            parse_srv("10 0 8888 payments.stygian.io"),
+            Some((10, 0, 8888, "payments.stygian.io".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_srv_picks_lowest_priority() {
+        let a = parse_srv("20 0 8888 a.example.org").unwrap();
+        let b = parse_srv("10 0 9999 b.example.org").unwrap();
+        assert!(b.0 < a.0);
+    }
+
+    #[test]
+    fn parse_srv_rejects_malformed() {
+        assert!(parse_srv("10 0 8888").is_none());
+        assert!(parse_srv("not numbers").is_none());
+        assert!(parse_srv("10 0 8888 ").is_none());
+    }
+
+    #[test]
+    fn static_endpoint_resolver() {
+        let mut r = StaticEndpointResolver::new();
+        r.insert("example.org", "payments.example.org:8888");
+        assert_eq!(
+            r.resolve_endpoint("example.org").unwrap(),
+            "payments.example.org:8888"
+        );
+        assert!(matches!(
+            r.resolve_endpoint("nope.org"),
+            Err(ResolverError::NoSrv(_))
         ));
     }
 }

@@ -63,9 +63,14 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     let store = Arc::new(SqliteMailStore::open(&mailbox_db)?);
     info!(path = %mailbox_db.display(), "mailbox store open");
 
+    let send_override = if cfg.network.send_endpoint.is_empty() {
+        None
+    } else {
+        Some(cfg.network.send_endpoint.clone())
+    };
     let handler = std::sync::Arc::new(secure::SecureMailboxService::new(
         &sender_domain,
-        &cfg.network.send_endpoint,
+        send_override,
         domain_key.clone(),
         store.clone(),
     ));
@@ -158,6 +163,18 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
             error!(error = %e, "IMAP listener failed");
         }
     });
+
+    // UNSAFE_NO_TLS: additionally expose plaintext IMAP on 127.0.0.1:143.
+    // For dev / trusted networks only — no TLS, no encryption.
+    if std::env::var("UNSAFE_NO_TLS").is_ok() {
+        let plain_imap = ImapServer::new(store.clone(), "talkd").with_auth_mode(imap_auth);
+        info!("UNSAFE_NO_TLS set: binding plaintext IMAP on 127.0.0.1:143 (INSECURE)");
+        tokio::spawn(async move {
+            if let Err(e) = plain_imap.listen("127.0.0.1:143").await {
+                error!(error = %e, "plaintext IMAP (143) listener failed");
+            }
+        });
+    }
 
     // Connect to the lightwalletd indexer. A failure here is non-fatal at boot
     // (the daemon can start without the indexer and retry), but we log it and

@@ -5,8 +5,11 @@ use std::sync::Arc;
 use talk_mailstore::{SqliteMailStore, hash_password};
 use talk_protocol::attestation::{Attestation, AttestationMode, mint_pair};
 use talk_protocol::envelope::Payload;
-use talk_protocol::mailbox::{AttestResult, RegisterResult, SecureMailboxHandler, SendResult};
-use talk_protocol::{DohDomainKeyResolver, DomainKeyResolver, connect_tcp};
+use talk_protocol::mailbox::{AsyncSecureMailboxHandler, AttestResult, RegisterResult, SendResult};
+use talk_protocol::{
+    DohDomainKeyResolver, DohEndpointResolver, DomainKeyResolver, EndpointResolver, connect_tcp_tls,
+};
+use tracing::warn;
 
 /// The registration attestation `R` content version tag.
 const REGISTRATION_ATTR_V1: &str = "reg-v1";
@@ -15,15 +18,20 @@ const REGISTRATION_ATTR_V1: &str = "reg-v1";
 /// other daemons, and issuing signed address attestations with the daemon's
 /// persisted domain key.
 ///
-/// v1 connects to the recipient daemon over TCP at `send_endpoint` (DNS SRV
-/// discovery is a later milestone).
+/// The recipient daemon's endpoint is discovered via DNS SRV
+/// (`_zpayments._tcp.<domain>`); `send_endpoint` is a dev override used only
+/// when SRV finds nothing. Sends use implicit TLS (accept-any-cert; server
+/// identity comes from the domain-key handshake).
 pub struct SecureMailboxService {
     /// Our domain (the sender).
     pub sender_domain: String,
-    /// The recipient daemon's TCP endpoint, e.g. `receiver.example.org:2525`.
-    pub send_endpoint: String,
+    /// Optional dev override for the recipient daemon's TCP endpoint
+    /// (`host:port`). `None` = always use SRV discovery.
+    pub send_endpoint: Option<String>,
     /// Resolves the receiver's public domain key for verification.
-    resolver: DohDomainKeyResolver,
+    resolver: Arc<dyn DomainKeyResolver>,
+    /// Resolves the receiver's ZSMTP TCP endpoint via DNS SRV.
+    endpoint_resolver: Arc<dyn EndpointResolver>,
     /// Our domain signing key (persisted; the public half is published in DNS).
     domain_key: SigningKey,
     /// The mailbox store (users, keyring, inboxes).
@@ -33,17 +41,32 @@ pub struct SecureMailboxService {
 impl SecureMailboxService {
     pub fn new(
         sender_domain: impl Into<String>,
-        send_endpoint: impl Into<String>,
+        send_endpoint: Option<String>,
         domain_key: SigningKey,
         store: Arc<SqliteMailStore>,
     ) -> Self {
         Self {
             sender_domain: sender_domain.into(),
-            send_endpoint: send_endpoint.into(),
-            resolver: DohDomainKeyResolver::default(),
+            send_endpoint,
+            resolver: Arc::new(DohDomainKeyResolver::default()),
+            endpoint_resolver: Arc::new(DohEndpointResolver::default()),
             domain_key,
             store,
         }
+    }
+
+    /// Override the domain-key resolver (tests / dev).
+    #[allow(dead_code)]
+    pub fn with_key_resolver(mut self, resolver: Arc<dyn DomainKeyResolver>) -> Self {
+        self.resolver = resolver;
+        self
+    }
+
+    /// Override the endpoint resolver (tests / dev).
+    #[allow(dead_code)]
+    pub fn with_endpoint_resolver(mut self, resolver: Arc<dyn EndpointResolver>) -> Self {
+        self.endpoint_resolver = resolver;
+        self
     }
 
     /// Build the registration attestation `R`: a domain-key-signed binding of
@@ -75,8 +98,9 @@ impl SecureMailboxService {
     }
 }
 
-impl SecureMailboxHandler for SecureMailboxService {
-    fn send(
+#[async_trait::async_trait]
+impl AsyncSecureMailboxHandler for SecureMailboxService {
+    async fn send(
         &self,
         sender_username: &str,
         recipient_mailbox: &str,
@@ -87,48 +111,62 @@ impl SecureMailboxHandler for SecureMailboxService {
         if sender_username.is_empty() {
             return SendResult::Error("sender username is required".to_string());
         }
-        let outcome = tokio::runtime::Handle::current().block_on(async {
-            // The receiver's domain is the part after '@' in the mailbox.
-            let Some(receiver_domain) = recipient_mailbox.split('@').nth(1) else {
-                return Err("malformed recipient mailbox".to_string());
-            };
-            // Resolve the receiver's public key.
-            let receiver_pub = match self.resolver.resolving_key(receiver_domain) {
-                Ok(k) => k,
-                Err(e) => return Err(format!("cannot resolve domain key: {e}")),
-            };
-            // Connect and run the full ZSMTP send flow.
-            let mut client = match connect_tcp(&self.send_endpoint, &self.sender_domain).await {
-                Ok(c) => c,
-                Err(e) => return Err(format!("connect: {e}")),
-            };
-            if let Err(e) = client.hello().await {
-                return Err(format!("hello: {e}"));
-            }
-            if let Err(e) = client.authenticate(&receiver_pub).await {
-                return Err(format!("auth: {e}"));
-            }
-            // Request an ephemeral address for the recipient user.
-            let user = recipient_mailbox.split('@').next().unwrap_or("");
-            if let Err(e) = client
-                .request_address(user, AttestationMode::Ephemeral, &receiver_pub)
-                .await
-            {
-                return Err(format!("addr: {e}"));
-            }
-            if let Err(e) = client
-                .send_invoice(sender_username, message_id, payload, body)
-                .await
-            {
-                return Err(format!("invoice: {e}"));
-            }
-            let _ = client.quit().await;
-            Ok(())
-        });
-        match outcome {
-            Ok(()) => SendResult::Ok(format!("delivered {message_id} to {recipient_mailbox}")),
-            Err(e) => SendResult::Error(e),
+        // The receiver's domain is the part after '@' in the mailbox.
+        let Some(receiver_domain) = recipient_mailbox.split('@').nth(1) else {
+            return SendResult::Error("malformed recipient mailbox".to_string());
+        };
+        // Resolve the receiver's public key.
+        let receiver_pub = match self.resolver.resolving_key(receiver_domain) {
+            Ok(k) => k,
+            Err(e) => return SendResult::Error(format!("cannot resolve domain key: {e}")),
+        };
+        // Resolve the receiver's ZSMTP endpoint: SRV discovery, with the
+        // config `send_endpoint` as a dev override when SRV finds nothing.
+        let endpoint = match self.endpoint_resolver.resolve_endpoint(receiver_domain) {
+            Ok(ep) => ep,
+            Err(e) => match &self.send_endpoint {
+                Some(override_ep) => {
+                    warn!(error = %e, override = %override_ep, "SRV lookup failed; using send_endpoint override");
+                    override_ep.clone()
+                }
+                None => return SendResult::Error(format!("cannot resolve endpoint: {e}")),
+            },
+        };
+        // Connect over implicit TLS (accept-any-cert; server identity is
+        // the domain-key handshake).
+        let mut client = match connect_tcp_tls(
+            &endpoint,
+            receiver_domain,
+            talk_protocol::accept_any_cert_client_config(),
+            &self.sender_domain,
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => return SendResult::Error(format!("connect: {e}")),
+        };
+        if let Err(e) = client.hello().await {
+            return SendResult::Error(format!("hello: {e}"));
         }
+        if let Err(e) = client.authenticate(&receiver_pub).await {
+            return SendResult::Error(format!("auth: {e}"));
+        }
+        // Request an ephemeral address for the recipient user.
+        let user = recipient_mailbox.split('@').next().unwrap_or("");
+        if let Err(e) = client
+            .request_address(user, AttestationMode::Ephemeral, &receiver_pub)
+            .await
+        {
+            return SendResult::Error(format!("addr: {e}"));
+        }
+        if let Err(e) = client
+            .send_invoice(sender_username, message_id, payload, body)
+            .await
+        {
+            return SendResult::Error(format!("invoice: {e}"));
+        }
+        let _ = client.quit().await;
+        SendResult::Ok(format!("delivered {message_id} to {recipient_mailbox}"))
     }
 
     fn attest(&self, user: &str, mode: AttestationMode) -> AttestResult {
@@ -192,11 +230,12 @@ impl SecureMailboxHandler for SecureMailboxService {
     }
 
     fn status(&self) -> String {
+        let endpoint = self.send_endpoint.as_deref().unwrap_or("srv");
         format!(
             "talkd {} sender={} endpoint={}",
             env!("CARGO_PKG_VERSION"),
             self.sender_domain,
-            self.send_endpoint
+            endpoint
         )
     }
 }
@@ -380,7 +419,7 @@ mod tests {
         (
             SecureMailboxService::new(
                 "example.org",
-                "receiver.example.org:2525",
+                Some("receiver.example.org:2525".to_string()),
                 key,
                 store.clone(),
             ),
@@ -391,5 +430,122 @@ mod tests {
     /// Read the stored argon2 hash for a user.
     fn store_password_hash(store: &SqliteMailStore, username: &str) -> String {
         store.password_hash(username).expect("get").expect("exists")
+    }
+
+    #[tokio::test]
+    async fn send_resolves_endpoint_via_srv_and_delivers_over_tls() {
+        use crate::sink::StoreUserDirectory;
+        use rcgen::{CertificateParams, KeyPair};
+        use talk_mailstore::NewMessage;
+        use talk_protocol::handshake::DomainKey;
+        use talk_protocol::session::{DeliveryOutcome, DeliverySink};
+        use talk_protocol::{StaticDomainKeyResolver, StaticEndpointResolver};
+        use tokio::net::TcpListener;
+
+        // Self-signed TLS server config.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let kp = KeyPair::generate().expect("kp");
+        let params = CertificateParams::new(vec!["receiver.example.org".to_string()]).expect("p");
+        let cert = params.self_signed(&kp).expect("cert");
+        let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(kp.serialize_der()),
+        );
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.der().clone()], key_der)
+            .expect("server config");
+
+        // A store-backed sink for the receiving side.
+        struct Sink(Arc<SqliteMailStore>);
+        impl DeliverySink for Sink {
+            fn deliver(
+                &self,
+                _s: &str,
+                message_id: &str,
+                recipient: &str,
+                _p: Payload,
+                _b: &[u8],
+            ) -> DeliveryOutcome {
+                let user = recipient.split('@').next().unwrap_or("");
+                let u = self.0.get_user(user).expect("get").expect("exists");
+                self.0
+                    .append_message(u.id, NewMessage::invoice(message_id, "s", b"body".to_vec()))
+                    .expect("append");
+                DeliveryOutcome::Accepted {
+                    message_id: message_id.to_string(),
+                }
+            }
+        }
+
+        // Fresh stores for sender and receiver sides.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sender_store =
+            Arc::new(SqliteMailStore::open(dir.path().join("sender.db")).expect("open"));
+        let hash = talk_mailstore::hash_password("pw").expect("hash");
+        sender_store
+            .create_user("alice", &hash, &[0u8; 32])
+            .expect("sender user");
+        let recv_store = Arc::new(SqliteMailStore::open(dir.path().join("recv.db")).expect("open"));
+        recv_store
+            .create_user("bob", &hash, &[0u8; 32])
+            .expect("recipient user");
+
+        // Boot a TLS ZSMTP server on an ephemeral port, in its own thread/runtime.
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("probe");
+        let port = probe.local_addr().expect("addr").port();
+        drop(probe);
+        let receiver_key = Arc::new(DomainKey::generate("receiver.example.org"));
+        let sink = Arc::new(Sink(recv_store.clone()));
+        let directory = Arc::new(StoreUserDirectory::new(recv_store.clone()));
+        let server_key = receiver_key.signing.clone();
+        let server_config = Arc::new(server_config);
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("rt");
+            rt.block_on(async move {
+                let listener = TcpListener::bind(("127.0.0.1", port)).await.expect("bind");
+                talk_protocol::server::serve_tcp(
+                    "receiver.example.org".to_string(),
+                    server_key,
+                    sink,
+                    directory,
+                    Some(server_config),
+                    listener,
+                )
+                .await;
+            });
+        });
+
+        // Static resolvers so no real DNS is needed.
+        let mut key_resolver = StaticDomainKeyResolver::new();
+        key_resolver.insert("receiver.example.org", receiver_key.verifying());
+        let mut ep_resolver = StaticEndpointResolver::new();
+        ep_resolver.insert("receiver.example.org", format!("127.0.0.1:{port}"));
+
+        let domain_key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let svc =
+            SecureMailboxService::new("sender.example.org", None, domain_key, sender_store.clone())
+                .with_key_resolver(Arc::new(key_resolver))
+                .with_endpoint_resolver(Arc::new(ep_resolver));
+
+        // Give the server thread a moment to bind.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let result = svc
+            .send(
+                "alice",
+                "bob@receiver.example.org",
+                "msg-srv-1",
+                Payload::Sealed,
+                b"opaque",
+            )
+            .await;
+        assert!(
+            matches!(result, SendResult::Ok(_)),
+            "send should succeed via SRV+TLS: {result:?}"
+        );
+        // The receiving store must have the delivered message.
+        let bob = recv_store.get_user("bob").expect("get").expect("exists");
+        let msgs = recv_store.list_messages(bob.id).expect("list");
+        assert_eq!(msgs.len(), 1, "delivered message present");
     }
 }
