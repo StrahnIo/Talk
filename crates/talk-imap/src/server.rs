@@ -3,6 +3,7 @@
 use crate::parse::{CommandReader, ParseError};
 use crate::response;
 use crate::session::{Session, State};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use talk_mailstore::SqliteMailStore;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -26,6 +27,11 @@ pub struct ImapServer {
     auth_mode: crate::session::AuthMode,
     /// The daemon's local domain; login accepts `user@<domain>` for it.
     domain: String,
+    /// Optional directory for per-session IMAP transcript capture
+    /// (`talkd --capture-dir`).
+    capture_dir: Option<std::path::PathBuf>,
+    /// Per-server connection sequence for capture filenames.
+    capture_seq: Arc<AtomicU64>,
 }
 
 impl ImapServer {
@@ -38,12 +44,20 @@ impl ImapServer {
             tls: None,
             auth_mode: crate::session::AuthMode::Database,
             domain: String::new(),
+            capture_dir: None,
+            capture_seq: Arc::new(AtomicU64::new(0)),
         }
     }
 
     /// Set the daemon's local domain, enabling `user@<domain>` logins.
     pub fn with_domain(mut self, domain: impl Into<String>) -> Self {
         self.domain = domain.into();
+        self
+    }
+
+    /// Capture every IMAP session to a timestamped transcript file in `dir`.
+    pub fn with_capture_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.capture_dir = Some(dir.into());
         self
     }
 
@@ -79,30 +93,60 @@ impl ImapServer {
     pub async fn listen(self, addr: &str) -> std::io::Result<()> {
         let listener = TcpListener::bind(addr).await?;
         info!(addr = %addr, tls = self.tls.is_some(), "IMAP listening");
+        if let Some(dir) = &self.capture_dir {
+            std::fs::create_dir_all(dir)?;
+            info!(dir = %dir.display(), "capturing IMAP sessions to");
+        }
         loop {
             let (stream, peer) = listener.accept().await?;
             let server = self.clone();
+            let seq = self.capture_seq.fetch_add(1, Ordering::Relaxed);
             info!(peer = %peer, "IMAP connection accepted");
             tokio::spawn(async move {
-                let mut stream = stream;
-                // Wrap in TLS if configured (IMAPS).
                 if let Some(acceptor) = &server.tls {
+                    // Capture after TLS decryption, so transcripts are the
+                    // readable IMAP protocol, not TLS records.
                     match acceptor.accept(stream).await {
-                        Ok(tls_stream) => {
-                            let mut tls_stream = tls_stream;
-                            if let Err(e) = serve_connection(&mut tls_stream, &server).await {
-                                warn!(error = %e, "IMAP TLS connection closed with error");
-                            }
-                        }
+                        Ok(tls_stream) => serve_conn(&server, tls_stream, peer, seq).await,
                         Err(e) => {
                             warn!(error = %e, "IMAP TLS handshake failed");
                         }
                     }
-                } else if let Err(e) = serve_connection(&mut stream, &server).await {
-                    warn!(error = %e, "IMAP connection closed with error");
+                } else {
+                    serve_conn(&server, stream, peer, seq).await;
                 }
             });
         }
+    }
+}
+
+/// Serve one connection, wrapping the stream in a transcript capture when the
+/// server is configured with a capture directory.
+async fn serve_conn<S: AsyncRead + AsyncWrite + Unpin>(
+    server: &ImapServer,
+    stream: S,
+    peer: std::net::SocketAddr,
+    seq: u64,
+) {
+    if let Some(dir) = &server.capture_dir {
+        match crate::capture::CaptureFile::open(dir, seq, &peer.to_string()) {
+            Ok(capture) => {
+                let mut captured = crate::capture::Captured::new(stream, capture);
+                let res = serve_connection(&mut captured, server).await;
+                captured.finish();
+                if let Err(e) = res {
+                    warn!(error = %e, "IMAP connection closed with error");
+                }
+                return;
+            }
+            Err(e) => {
+                warn!(error = %e, dir = %dir.display(), "capture file failed; serving uncaptured");
+            }
+        }
+    }
+    let mut stream = stream;
+    if let Err(e) = serve_connection(&mut stream, server).await {
+        warn!(error = %e, "IMAP connection closed with error");
     }
 }
 
@@ -115,6 +159,8 @@ impl Clone for ImapServer {
             tls: self.tls.clone(),
             auth_mode: self.auth_mode,
             domain: self.domain.clone(),
+            capture_dir: self.capture_dir.clone(),
+            capture_seq: self.capture_seq.clone(),
         }
     }
 }
