@@ -778,10 +778,7 @@ fn extract_field_list(s: &str) -> Option<&str> {
 /// Synthesize a minimal RFC 2822 header block from the stored metadata, so
 /// clients that fetch `BODY[HEADER]` (e.g. Thunderbird's folder sync) see a
 /// proper message. `filter` is `Some((fields, negate))` for `HEADER.FIELDS`.
-fn header_lines(
-    meta: &talk_mailstore::MessageMeta,
-    filter: Option<(&[String], bool)>,
-) -> Vec<u8> {
+fn header_lines(meta: &talk_mailstore::MessageMeta, filter: Option<(&[String], bool)>) -> Vec<u8> {
     let mut hdrs: Vec<(String, String)> = Vec::new();
     if !meta.sender.is_empty() {
         hdrs.push(("From".to_string(), meta.sender.clone()));
@@ -890,9 +887,7 @@ fn envelope_response(meta: &talk_mailstore::MessageMeta) -> String {
     let date = format_internaldate(meta.internaldate);
     let subject = response::quote(&meta.subject);
     let message_id = response::quote(&meta.message_id);
-    format!(
-        "{date} {subject} NIL NIL NIL NIL NIL NIL NIL {message_id}"
-    )
+    format!("{date} {subject} NIL NIL NIL NIL NIL NIL NIL {message_id}")
 }
 
 /// Whether `username` is a member of the OS `zsmtp` group. Used by the

@@ -238,8 +238,13 @@ fn fetch_header_fields_only_returns_listed() {
     s.handle(&parse_cmd("A1 LOGIN alice secret"));
     s.handle(&parse_cmd("A2 SELECT INBOX"));
 
-    let out = s.handle(&parse_cmd("A3 FETCH 1 (BODY.PEEK[HEADER.FIELDS (SUBJECT)])"));
-    assert!(out.contains("BODY[HEADER.FIELDS (SUBJECT)] {"), "got: {out}");
+    let out = s.handle(&parse_cmd(
+        "A3 FETCH 1 (BODY.PEEK[HEADER.FIELDS (SUBJECT)])",
+    ));
+    assert!(
+        out.contains("BODY[HEADER.FIELDS (SUBJECT)] {"),
+        "got: {out}"
+    );
     assert!(out.contains("Subject: New sealed invoice"), "got: {out}");
     assert!(!out.contains("Message-ID"), "only listed fields: {out}");
     assert!(out.contains("A3 OK FETCH completed"));
@@ -255,7 +260,10 @@ fn fetch_text_section_returns_body() {
     let out = s.handle(&parse_cmd("A3 FETCH 1 (BODY.PEEK[TEXT])"));
     assert!(out.contains("BODY[TEXT] {15}"), "got: {out}");
     assert!(out.contains("ciphertext-blob"), "got: {out}");
-    assert!(!out.contains("Subject:"), "text must not include headers: {out}");
+    assert!(
+        !out.contains("Subject:"),
+        "text must not include headers: {out}"
+    );
 }
 
 #[test]
@@ -301,7 +309,9 @@ fn status_includes_recent() {
     let (_dir, store, _) = setup();
     let mut s = session_with(store);
     s.handle(&parse_cmd("A1 LOGIN alice secret"));
-    let out = s.handle(&parse_cmd("A2 STATUS INBOX (MESSAGES RECENT UNSEEN UIDNEXT UIDVALIDITY)"));
+    let out = s.handle(&parse_cmd(
+        "A2 STATUS INBOX (MESSAGES RECENT UNSEEN UIDNEXT UIDVALIDITY)",
+    ));
     assert!(out.contains("MESSAGES 1"), "got: {out}");
     assert!(out.contains("RECENT 0"), "got: {out}");
     assert!(out.contains("A2 OK STATUS completed"));
