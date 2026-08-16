@@ -12,6 +12,7 @@ pub mod attestation;
 pub mod client;
 pub mod codec;
 pub mod dns;
+pub mod emulate;
 pub mod envelope;
 pub mod framing;
 pub mod handshake;
@@ -33,9 +34,10 @@ pub use dns::{
     SRV_SERVICE, StaticDomainKeyResolver, StaticEndpointResolver, parse_srv,
 };
 pub use envelope::{Envelope, Payload, Recipient};
+pub use emulate::EmulatePayload;
 pub use handshake::{Challenge, ChallengeResponse, DomainKey, HandshakeError};
 pub use mailbox::{
-    AsyncSecureMailboxHandler, AttestResult, RegisterResult, SecureMailboxClient,
+    AsyncSecureMailboxHandler, AttestResult, EmulateResult, RegisterResult, SecureMailboxClient,
     SecureMailboxHandler, SendResult,
 };
 pub use session::{

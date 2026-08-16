@@ -1,13 +1,19 @@
 //! The secure_mailbox handler: what the local client can ask the daemon to do.
 
+use crate::sink::StoreDeliverySink;
 use ed25519_dalek::SigningKey;
+use std::path::PathBuf;
 use std::sync::Arc;
+use talk_core::template::{TeraEngine, TemplateEngine, TemplateSpec};
 use talk_mailstore::{SqliteMailStore, hash_password};
 use talk_protocol::attestation::{
     Attestation, AttestationMode, RegistrationAttestation, mint_pair,
 };
+use talk_protocol::emulate::EmulatePayload;
 use talk_protocol::envelope::Payload;
-use talk_protocol::mailbox::{AsyncSecureMailboxHandler, AttestResult, RegisterResult, SendResult};
+use talk_protocol::mailbox::{
+    AsyncSecureMailboxHandler, AttestResult, EmulateResult, RegisterResult, SendResult,
+};
 use talk_protocol::{
     DohDomainKeyResolver, DohEndpointResolver, DomainKeyResolver, EndpointResolver, connect_tcp_tls,
 };
@@ -35,6 +41,12 @@ pub struct SecureMailboxService {
     domain_key: SigningKey,
     /// The mailbox store (users, keyring, inboxes).
     store: Arc<SqliteMailStore>,
+    /// Delivery sink used by local payment emulation.
+    sink: Arc<StoreDeliverySink>,
+    /// Explicit `[mailbox] template_path` override, if configured.
+    template_path: Option<PathBuf>,
+    /// The daemon data dir, where `<data_dir>/template.toml` may live.
+    data_dir: PathBuf,
 }
 
 impl SecureMailboxService {
@@ -50,7 +62,42 @@ impl SecureMailboxService {
             resolver: Arc::new(DohDomainKeyResolver::default()),
             endpoint_resolver: Arc::new(DohEndpointResolver::default()),
             domain_key,
-            store,
+            store: store.clone(),
+            sink: Arc::new(StoreDeliverySink::new(store)),
+            template_path: None,
+            data_dir: PathBuf::new(),
+        }
+    }
+
+    /// Override the delivery sink (the daemon wires the IMAP event broadcaster).
+    pub fn with_sink(mut self, sink: Arc<StoreDeliverySink>) -> Self {
+        self.sink = sink;
+        self
+    }
+
+    /// Configure template resolution: an explicit `template_path` (if any) and
+    /// the data dir where `<data_dir>/template.toml` is discovered.
+    pub fn with_template(mut self, template_path: Option<PathBuf>, data_dir: PathBuf) -> Self {
+        self.template_path = template_path;
+        self.data_dir = data_dir;
+        self
+    }
+
+    /// Resolve the template spec: explicit `template_path` if set (must
+    /// exist), else `<data_dir>/template.toml` if present, else the built-in
+    /// default.
+    fn resolve_template(&self) -> Result<TemplateSpec, talk_core::TemplateError> {
+        if let Some(path) = &self.template_path {
+            return TemplateSpec::load(path, "invoice")?.ok_or_else(|| {
+                talk_core::TemplateError::Render(format!(
+                    "configured template file {} not found",
+                    path.display()
+                ))
+            });
+        }
+        match TemplateSpec::load(&self.data_dir.join("template.toml"), "invoice")? {
+            Some(spec) => Ok(spec),
+            None => Ok(TemplateSpec::default_invoice()),
         }
     }
 
@@ -222,6 +269,50 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
             endpoint
         )
     }
+
+    fn emulate(&self, recipient_user: &str, payload: &EmulatePayload) -> EmulateResult {
+        if recipient_user.is_empty() {
+            return EmulateResult::Error("recipient user is required".to_string());
+        }
+        let spec = match self.resolve_template() {
+            Ok(s) => s,
+            Err(e) => return EmulateResult::Error(format!("template: {e}")),
+        };
+        let data = serde_json::json!({
+            "sender_name": payload.sender_name,
+            "sender_address": payload.sender_address,
+            "amount": payload.amount,
+            "invoice": String::from_utf8_lossy(&payload.invoice),
+            "received_at": received_at(),
+        });
+        let engine = TeraEngine;
+        let subject = match engine.render(&spec.subject, &data) {
+            Ok(s) => s,
+            Err(e) => return EmulateResult::Error(format!("template subject: {e}")),
+        };
+        let body = match engine.render(&spec.body, &data) {
+            Ok(s) => s,
+            Err(e) => return EmulateResult::Error(format!("template body: {e}")),
+        };
+        let message_id = format!("emul-{}", random_hex(8));
+        match self.sink.deliver_emulated(
+            recipient_user,
+            &payload.sender_name,
+            &message_id,
+            &subject,
+            body.as_bytes(),
+        ) {
+            talk_protocol::session::DeliveryOutcome::Accepted { .. } => {
+                EmulateResult::Ok(format!("delivered {message_id} to {recipient_user}"))
+            }
+            talk_protocol::session::DeliveryOutcome::Rejected { reason } => {
+                EmulateResult::Error(reason)
+            }
+            talk_protocol::session::DeliveryOutcome::RetryLater { reason } => {
+                EmulateResult::Error(format!("retry later: {reason}"))
+            }
+        }
+    }
 }
 
 fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
@@ -239,6 +330,22 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or(std::time::Duration::ZERO)
         .as_secs() as i64
+}
+
+/// A human-readable UTC timestamp for the template context.
+fn received_at() -> String {
+    use time::format_description::well_known::Rfc3339;
+    time::OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// `n` random bytes as hex (message ids etc.).
+fn random_hex(n: usize) -> String {
+    use rand::RngCore;
+    let mut bytes = vec![0u8; n];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
 }
 
 #[cfg(test)]
@@ -359,6 +466,15 @@ mod tests {
 
     fn service() -> SecureMailboxService {
         service_with_store().0
+    }
+
+    fn payload() -> EmulatePayload {
+        EmulatePayload {
+            sender_name: "Alice Smith".to_string(),
+            sender_address: "t1abc123".to_string(),
+            amount: "1.5".to_string(),
+            invoice: b"line one\nline two".to_vec(),
+        }
     }
 
     fn service_with_store() -> (SecureMailboxService, Arc<SqliteMailStore>) {
@@ -498,5 +614,101 @@ mod tests {
         let bob = recv_store.get_user("bob").expect("get").expect("exists");
         let msgs = recv_store.list_messages(bob.id).expect("list");
         assert_eq!(msgs.len(), 1, "delivered message present");
+    }
+
+    #[test]
+    fn emulate_delivers_rendered_message() {
+        let (svc, store) = service_with_store();
+        let pubkey = hex::encode([3u8; 32]);
+        assert_eq!(svc.register("bob", "pw", &pubkey, None), RegisterResult::Ok);
+
+        let result = svc.emulate("bob", &payload());
+        let EmulateResult::Ok(text) = result else {
+            panic!("expected Ok, got {result:?}");
+        };
+        assert!(text.contains("emul-"), "message id format: {text}");
+
+        let bob = store.get_user("bob").expect("get").expect("exists");
+        let msgs = store.list_messages(bob.id).expect("list");
+        assert_eq!(msgs.len(), 1);
+        let msg = store.fetch_message(bob.id, msgs[0].id).expect("fetch");
+        assert_eq!(msg.meta.subject, "Invoice from Alice Smith");
+        assert_eq!(msg.meta.trust_state, "unverified");
+        let body = String::from_utf8(msg.body).expect("utf8");
+        assert!(body.contains("Alice Smith"), "{body}");
+        assert!(body.contains("t1abc123"), "{body}");
+        assert!(body.contains("1.5 ZEC"), "{body}");
+        assert!(body.contains("line one\nline two"), "{body}");
+    }
+
+    #[test]
+    fn emulate_broadcasts_idle_event() {
+        use talk_imap::server::MailboxEvent;
+        let (svc, store) = service_with_store();
+        let pubkey = hex::encode([3u8; 32]);
+        assert_eq!(svc.register("bob", "pw", &pubkey, None), RegisterResult::Ok);
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        let sink = Arc::new(crate::sink::StoreDeliverySink::new(store).with_events(tx));
+        let svc = svc.with_sink(sink);
+
+        let EmulateResult::Ok(_) = svc.emulate("bob", &payload()) else {
+            panic!("expected Ok");
+        };
+        let event = rx.try_recv().expect("broadcast");
+        assert!(matches!(event, MailboxEvent::MessageAppended { .. }));
+    }
+
+    #[test]
+    fn emulate_unknown_user_errors() {
+        let (svc, _store) = service_with_store();
+        let EmulateResult::Error(e) = svc.emulate("ghost", &payload()) else {
+            panic!("expected Error");
+        };
+        assert!(e.contains("no such recipient"), "got: {e}");
+    }
+
+    #[test]
+    fn emulate_rejects_empty_recipient() {
+        let (svc, _store) = service_with_store();
+        let EmulateResult::Error(e) = svc.emulate("", &payload()) else {
+            panic!("expected Error");
+        };
+        assert!(e.contains("recipient"), "got: {e}");
+    }
+
+    #[test]
+    fn emulate_uses_template_toml_override() {
+        let (svc, store) = service_with_store();
+        let pubkey = hex::encode([3u8; 32]);
+        assert_eq!(svc.register("bob", "pw", &pubkey, None), RegisterResult::Ok);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = dir.path().join("template.toml");
+        std::fs::write(
+            &template,
+            "[invoice]\nsubject = \"Money from {{ sender_name }}\"\nbody = \"AMOUNT: {{ amount }} ZEC\"\n",
+        )
+        .expect("write template");
+        let svc = svc.with_template(None, dir.path().to_path_buf());
+
+        let EmulateResult::Ok(_) = svc.emulate("bob", &payload()) else {
+            panic!("expected Ok");
+        };
+        let bob = store.get_user("bob").expect("get").expect("exists");
+        let msgs = store.list_messages(bob.id).expect("list");
+        let msg = store.fetch_message(bob.id, msgs[0].id).expect("fetch");
+        assert_eq!(msg.meta.subject, "Money from Alice Smith");
+        assert_eq!(String::from_utf8(msg.body).expect("utf8"), "AMOUNT: 1.5 ZEC");
+    }
+
+    #[test]
+    fn emulate_explicit_template_path_missing_errors() {
+        let (svc, _store) = service_with_store();
+        let svc = svc.with_template(Some(PathBuf::from("/nonexistent/template.toml")), PathBuf::new());
+        let EmulateResult::Error(e) = svc.emulate("bob", &payload()) else {
+            panic!("expected Error");
+        };
+        assert!(e.contains("template"), "got: {e}");
     }
 }

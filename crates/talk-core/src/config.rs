@@ -69,6 +69,11 @@ pub struct Mailbox {
     #[serde(default)]
     pub passphrase: String,
     pub wallet_dir: PathBuf,
+    /// Optional path to a `template.toml` overriding the built-in message
+    /// templates. When unset, `<data_dir>/template.toml` is used if present,
+    /// else the built-in default.
+    #[serde(default)]
+    pub template_path: Option<PathBuf>,
 }
 
 /// How the server authenticates local users.

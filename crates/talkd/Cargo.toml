@@ -23,6 +23,7 @@ rand = { workspace = true }
 rustls = { workspace = true }
 hex = "0.4"
 sha2 = "0.10"
+time = { workspace = true }
 talk-core = { path = "../talk-core" }
 talk-imap = { path = "../talk-imap" }
 talk-mailstore = { path = "../talk-mailstore" }
