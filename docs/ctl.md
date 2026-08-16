@@ -94,6 +94,15 @@ talkctl --config /path/to/config.toml <command>
   An IVK is optional (`--ivk`); with one, the registration attestation `R`
   carries an `ivk_commitment`.
 
+## Usernames and domains
+
+Usernames are **local parts** (`alice`). `user` commands and IMAP login also
+accept the qualified `alice@<domain>` form, where `<domain>` must be the
+daemon's configured `[general] domain` (foreign domains are rejected). The
+domain is stripped and the local user resolved. `user create` only accepts a
+bare local name (no `@`, and no `:` which is reserved for the `:app`
+app-password suffix).
+
 ## Exit codes
 
 `0` on success, `1` on any error (config, store, or daemon rejection), with the
