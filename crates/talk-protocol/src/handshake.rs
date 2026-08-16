@@ -28,6 +28,9 @@ pub enum HandshakeError {
     InvalidKey,
 }
 
+/// Maximum acceptable age of a challenge, in seconds.
+pub const MAX_CHALLENGE_AGE: i64 = 300;
+
 /// A challenge issued by the sending server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Challenge {

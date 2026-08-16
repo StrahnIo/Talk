@@ -9,7 +9,9 @@
 //!   identified from the start (unlike classic SMTP).
 
 pub mod attestation;
+pub mod client;
 pub mod codec;
+pub mod dns;
 pub mod envelope;
 pub mod framing;
 pub mod handshake;
@@ -18,6 +20,8 @@ pub mod session;
 pub mod status;
 
 pub use attestation::{Attestation, AttestationError, AttestationMode};
+pub use client::{ClientError, ClientState, ZsmptClient};
+pub use dns::{DohDomainKeyResolver, DomainKeyResolver, ResolverError, StaticDomainKeyResolver};
 pub use envelope::{Envelope, Payload, Recipient};
 pub use handshake::{Challenge, ChallengeResponse, DomainKey, HandshakeError};
 pub use session::{DeliveryOutcome, DeliverySink, Reply, SessionState, ZsmptSession};
