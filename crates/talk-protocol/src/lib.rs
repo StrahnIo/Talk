@@ -33,8 +33,8 @@ pub use dns::{
     DohDomainKeyResolver, DohEndpointResolver, DomainKeyResolver, EndpointResolver, ResolverError,
     SRV_SERVICE, StaticDomainKeyResolver, StaticEndpointResolver, parse_srv,
 };
-pub use envelope::{Envelope, Payload, Recipient};
 pub use emulate::EmulatePayload;
+pub use envelope::{Envelope, Payload, Recipient};
 pub use handshake::{Challenge, ChallengeResponse, DomainKey, HandshakeError};
 pub use mailbox::{
     AsyncSecureMailboxHandler, AttestResult, EmulateResult, RegisterResult, SecureMailboxClient,

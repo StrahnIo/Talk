@@ -92,8 +92,7 @@ impl TemplateEngine for TeraEngine {
                 ctx.insert(k, v);
             }
         }
-        tera::Tera::one_off(template, &ctx, false)
-            .map_err(|e| TemplateError::Render(e.to_string()))
+        tera::Tera::one_off(template, &ctx, false).map_err(|e| TemplateError::Render(e.to_string()))
     }
 }
 
@@ -147,7 +146,9 @@ mod tests {
             "[invoice]\nsubject = \"Hi {{ sender_name }}\"\nbody = \"Amt {{ amount }}\"\n",
         )
         .unwrap();
-        let spec = TemplateSpec::load(&path, "invoice").expect("load").expect("some");
+        let spec = TemplateSpec::load(&path, "invoice")
+            .expect("load")
+            .expect("some");
         assert_eq!(spec.subject, "Hi {{ sender_name }}");
         assert_eq!(spec.body, "Amt {{ amount }}");
     }

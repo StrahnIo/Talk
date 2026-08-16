@@ -106,9 +106,17 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
     // payment emulation broadcasts to IMAP IDLE sessions) and the template
     // override.
     let handler = std::sync::Arc::new(
-        secure::SecureMailboxService::new(&sender_domain, send_override, domain_key.clone(), store.clone())
-            .with_sink(sink.clone())
-            .with_template(cfg.mailbox.template_path.clone(), cfg.general.data_dir.clone()),
+        secure::SecureMailboxService::new(
+            &sender_domain,
+            send_override,
+            domain_key.clone(),
+            store.clone(),
+        )
+        .with_sink(sink.clone())
+        .with_template(
+            cfg.mailbox.template_path.clone(),
+            cfg.general.data_dir.clone(),
+        ),
     );
     let mailbox_listener = secure_mailbox.to_tokio()?;
     tokio::spawn(async move {

@@ -199,9 +199,8 @@ pub fn emulate(
     amount: &str,
     invoice_file: &Path,
 ) -> Result<(), CtlError> {
-    let invoice = std::fs::read(invoice_file).map_err(|e| {
-        CtlError::msg(format!("cannot read {}: {e}", invoice_file.display()))
-    })?;
+    let invoice = std::fs::read(invoice_file)
+        .map_err(|e| CtlError::msg(format!("cannot read {}: {e}", invoice_file.display())))?;
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(emulate_async(
         config_path,

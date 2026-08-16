@@ -6,4 +6,4 @@ pub mod logging;
 pub mod sockets;
 pub mod template;
 
-pub use template::{TeraEngine, TemplateEngine, TemplateError, TemplateSpec};
+pub use template::{TemplateEngine, TemplateError, TemplateSpec, TeraEngine};

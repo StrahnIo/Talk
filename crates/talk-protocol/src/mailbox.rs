@@ -207,7 +207,9 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
                     }
                 };
                 match handler.emulate(recipient_user, &payload) {
-                    EmulateResult::Ok(text) => write_line(&mut stream, &format!("OK {text}")).await?,
+                    EmulateResult::Ok(text) => {
+                        write_line(&mut stream, &format!("OK {text}")).await?
+                    }
                     EmulateResult::Error(text) => {
                         write_line(&mut stream, &format!("ERR {text}")).await?
                     }

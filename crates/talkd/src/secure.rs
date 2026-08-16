@@ -4,7 +4,7 @@ use crate::sink::StoreDeliverySink;
 use ed25519_dalek::SigningKey;
 use std::path::PathBuf;
 use std::sync::Arc;
-use talk_core::template::{TeraEngine, TemplateEngine, TemplateSpec};
+use talk_core::template::{TemplateEngine, TemplateSpec, TeraEngine};
 use talk_mailstore::{SqliteMailStore, hash_password};
 use talk_protocol::attestation::{
     Attestation, AttestationMode, RegistrationAttestation, mint_pair,
@@ -699,13 +699,19 @@ mod tests {
         let msgs = store.list_messages(bob.id).expect("list");
         let msg = store.fetch_message(bob.id, msgs[0].id).expect("fetch");
         assert_eq!(msg.meta.subject, "Money from Alice Smith");
-        assert_eq!(String::from_utf8(msg.body).expect("utf8"), "AMOUNT: 1.5 ZEC");
+        assert_eq!(
+            String::from_utf8(msg.body).expect("utf8"),
+            "AMOUNT: 1.5 ZEC"
+        );
     }
 
     #[test]
     fn emulate_explicit_template_path_missing_errors() {
         let (svc, _store) = service_with_store();
-        let svc = svc.with_template(Some(PathBuf::from("/nonexistent/template.toml")), PathBuf::new());
+        let svc = svc.with_template(
+            Some(PathBuf::from("/nonexistent/template.toml")),
+            PathBuf::new(),
+        );
         let EmulateResult::Error(e) = svc.emulate("bob", &payload()) else {
             panic!("expected Error");
         };

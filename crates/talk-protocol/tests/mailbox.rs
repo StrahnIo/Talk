@@ -203,7 +203,13 @@ async fn emulate_command_reaches_handler() {
 
     let mut c = SecureMailboxClient::new(client);
     let reply = c
-        .emulate("bob", "Alice Smith", "t1abc123", "1.5", b"line one\nline two")
+        .emulate(
+            "bob",
+            "Alice Smith",
+            "t1abc123",
+            "1.5",
+            b"line one\nline two",
+        )
         .await
         .expect("emulate");
     assert!(reply.starts_with("OK delivered to bob"), "got: {reply}");
@@ -233,7 +239,10 @@ async fn emulate_missing_recipient_errors() {
     let mut buf = [0u8; 512];
     let n = client.read(&mut buf).await.unwrap();
     let reply = String::from_utf8_lossy(&buf[..n]);
-    assert!(reply.contains("ERR EMULATE requires a recipient user"), "got: {reply}");
+    assert!(
+        reply.contains("ERR EMULATE requires a recipient user"),
+        "got: {reply}"
+    );
 }
 
 #[tokio::test]
@@ -253,5 +262,8 @@ async fn emulate_malformed_blob_errors() {
     let mut buf = [0u8; 512];
     let n = client.read(&mut buf).await.unwrap();
     let reply = String::from_utf8_lossy(&buf[..n]);
-    assert!(reply.contains("ERR malformed EMULATE payload"), "got: {reply}");
+    assert!(
+        reply.contains("ERR malformed EMULATE payload"),
+        "got: {reply}"
+    );
 }
