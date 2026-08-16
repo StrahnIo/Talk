@@ -190,7 +190,9 @@ async fn run(cfg: talk_core::config::Config) -> Result<(), Box<dyn std::error::E
             }
         };
         let addr = format!("127.0.0.1:{port}");
-        let plain_imap = ImapServer::new(store.clone(), "talkd").with_auth_mode(imap_auth);
+        let plain_imap = ImapServer::new(store.clone(), "talkd")
+            .with_auth_mode(imap_auth)
+            .with_domain(sender_domain.clone());
         info!(addr = %addr, "UNSAFE_NO_TLS set: binding plaintext IMAP (INSECURE)");
         tokio::spawn(async move {
             if let Err(e) = plain_imap.listen(&addr).await {
