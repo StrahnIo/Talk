@@ -153,8 +153,7 @@ fn fetch_returns_body_literal() {
     s.handle(&parse_cmd("A2 SELECT INBOX"));
 
     let out = s.handle(&parse_cmd("A3 FETCH 1 BODY[]"));
-    assert!(out.contains("* 1 FETCH (FLAGS () UID 1 RFC822.SIZE 15)"));
-    assert!(out.contains("BODY[] {15}"));
+    assert!(out.contains("* 1 FETCH (FLAGS () UID 1 RFC822.SIZE 15 BODY[] {15}"));
     assert!(out.contains("ciphertext-blob"));
     assert!(out.contains("A3 OK FETCH completed"));
 }

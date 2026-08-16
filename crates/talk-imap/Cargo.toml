@@ -20,3 +20,6 @@ talk-mailstore = { path = "../talk-mailstore" }
 talk-keys = { path = "../talk-keys" }
 tempfile = "3"
 rand = { workspace = true }
+async-imap = "0.11"
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
