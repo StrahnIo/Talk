@@ -24,7 +24,9 @@ pub use attestation::{
     AddressProvider, Attestation, AttestationError, AttestationMode, MintedAddress,
     PlaceholderAddressProvider,
 };
-pub use client::{ClientError, ClientState, ZsmptClient, connect_tcp, connect_unix};
+pub use client::{
+    ClientError, ClientState, ZsmptClient, connect_tcp, connect_tcp_tls, connect_unix,
+};
 pub use dns::{DohDomainKeyResolver, DomainKeyResolver, ResolverError, StaticDomainKeyResolver};
 pub use envelope::{Envelope, Payload, Recipient};
 pub use handshake::{Challenge, ChallengeResponse, DomainKey, HandshakeError};
