@@ -33,6 +33,7 @@ fn session_with(store: Arc<SqliteMailStore>) -> Session {
         store,
         auth_mode: talk_imap::AuthMode::Database,
         domain: "talk.local".to_string(),
+        selected_mailbox: talk_mailstore::INBOX.to_string(),
     }
 }
 
@@ -751,4 +752,86 @@ fn capability_advertises_namespace() {
     let mut s = session_with(store);
     let out = s.handle(&parse_cmd("A1 CAPABILITY"));
     assert!(out.contains("NAMESPACE"), "got: {out}");
+}
+
+#[test]
+fn select_sent_and_fetch_per_mailbox() {
+    let (_dir, store, _) = setup();
+    let alice = store.get_user("alice").expect("get").expect("exists");
+    store
+        .append_message_to(
+            alice.id,
+            talk_mailstore::SENT,
+            NewMessage::invoice("sent-1".to_string(), "Sent invoice".to_string(), b"sent-body".to_vec()),
+        )
+        .expect("append sent");
+
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+
+    // LIST now reports both mailboxes.
+    let out = s.handle(&parse_cmd("A2 LIST \"\" \"*\""));
+    assert!(out.contains("\"INBOX\""), "{out}");
+    assert!(out.contains("\"Sent\""), "{out}");
+
+    // STATUS works on both.
+    let out = s.handle(&parse_cmd("A3 STATUS Sent (MESSAGES)"));
+    assert!(out.contains("MESSAGES 1"), "{out}");
+
+    // Selecting Sent scopes the INBOX-only fetch to 0, and Sent to 1.
+    let out = s.handle(&parse_cmd("A4 SELECT INBOX"));
+    assert!(out.contains("* 1 EXISTS"), "{out}");
+    let out = s.handle(&parse_cmd("A5 SELECT Sent"));
+    assert!(out.contains("* 1 EXISTS"), "sent has 1: {out}");
+    let out = s.handle(&parse_cmd("A6 FETCH 1 BODY[]"));
+    assert!(out.contains("sent-body"), "{out}");
+    assert!(out.contains("BODY[] {9}"), "{out}");
+
+    // A fetch for the (empty) INBOX scope after selecting Sent stays in Sent.
+    s.handle(&parse_cmd("A7 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A8 FETCH 1 BODY[]"));
+    assert!(out.contains("ciphertext-blob"), "inbox body: {out}");
+}
+
+#[test]
+fn select_unknown_mailbox_no() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    let out = s.handle(&parse_cmd("A2 SELECT Nope"));
+    assert!(out.contains("A2 NO Mailbox does not exist"), "{out}");
+    assert_eq!(s.state, State::Authenticated, "selection failed stays authenticated");
+}
+
+#[test]
+fn header_includes_tx_status_when_linked() {
+    let (_dir, store, _) = setup();
+    let alice = store.get_user("alice").expect("get").expect("exists");
+    let meta = store
+        .append_message(alice.id, NewMessage::invoice("txm1", "New sealed invoice", b"b".to_vec()))
+        .expect("append");
+    store
+        .tx_create(talk_mailstore::NewTransaction {
+            direction: talk_mailstore::TxDirection::In,
+            state: talk_mailstore::TxState::Resolved,
+            sender_mailbox: "bob@example.org".to_string(),
+            recipient_mailbox: "alice@talk.local".to_string(),
+            amount: "2.5".to_string(),
+            binding: None,
+            message_id: "txm1".to_string(),
+            outbound_body: None,
+        })
+        .expect("tx");
+    let tx = store
+        .tx_by_message_id(talk_mailstore::TxDirection::In, "txm1")
+        .expect("get")
+        .expect("exists");
+    store.tx_link_message(tx.id, meta.id).expect("link");
+
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 FETCH 2 (BODY.PEEK[HEADER])"));
+    assert!(out.contains("X-Talk-Txn-Status: resolved"), "{out}");
+    assert!(out.contains(&format!("X-Talk-Txn-Id: {}", tx.id)), "{out}");
 }

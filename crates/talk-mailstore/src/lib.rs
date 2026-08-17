@@ -178,6 +178,8 @@ pub struct MessageMeta {
     pub trust_state: String,
     /// Ledger transaction state for this message's transaction, if linked.
     pub tx_state: Option<String>,
+    /// The ledger transaction id for this message, if linked.
+    pub tx_id: Option<i64>,
 }
 
 /// A full message including its opaque (ciphertext) body.

@@ -599,6 +599,7 @@ impl SqliteMailStore {
             sender,
             trust_state: msg.trust_state,
             tx_state: None,
+            tx_id: None,
         })
     }
 
@@ -617,7 +618,7 @@ impl SqliteMailStore {
         let guard = self.lock()?;
         let mut stmt = guard.prepare(
             "SELECT m.id, m.message_id, m.uid, m.internaldate, m.flags, m.subject,
-                    m.size, m.sender, m.trust_state, t.state
+                    m.size, m.sender, m.trust_state, t.state, t.id
              FROM messages m
              LEFT JOIN transactions t ON t.message_row_id = m.id
              WHERE m.mailbox_id = ?1
@@ -796,7 +797,7 @@ impl SqliteMailStore {
         guard
             .query_row(
                 "SELECT m.id, m.message_id, m.uid, m.internaldate, m.flags, m.subject,
-                        m.size, m.sender, m.trust_state, t.state, m.body_blob
+                        m.size, m.sender, m.trust_state, t.state, t.id, m.body_blob
                  FROM messages m
                  LEFT JOIN transactions t ON t.message_row_id = m.id
                  WHERE m.mailbox_id = ?1 AND m.id = ?2",
@@ -804,7 +805,7 @@ impl SqliteMailStore {
                 |row| {
                     Ok(Message {
                         meta: row_to_meta(row, uidvalidity),
-                        body: row.get(10)?,
+                        body: row.get(11)?,
                     })
                 },
             )
@@ -891,6 +892,7 @@ fn row_to_meta(row: &rusqlite::Row<'_>, uidvalidity: u32) -> MessageMeta {
     let sender: String = row.get(7).unwrap_or_default();
     let trust_state: String = row.get(8).unwrap_or_else(|_| "unverified".to_string());
     let tx_state: Option<String> = row.get(9).unwrap_or(None);
+    let tx_id: Option<i64> = row.get(10).unwrap_or(None);
     MessageMeta {
         id,
         message_id,
@@ -903,6 +905,7 @@ fn row_to_meta(row: &rusqlite::Row<'_>, uidvalidity: u32) -> MessageMeta {
         sender,
         trust_state,
         tx_state,
+        tx_id,
     }
 }
 

@@ -35,6 +35,16 @@ pub struct Session {
     /// The daemon's local domain. Login accepts `user` or `user@<domain>`;
     /// other domains are rejected.
     pub domain: String,
+    /// The currently selected mailbox (INBOX or Sent).
+    pub selected_mailbox: String,
+}
+
+/// Canonical mailbox names (case-insensitive input).
+pub const MAILBOXES: [&str; 2] = [talk_mailstore::INBOX, talk_mailstore::SENT];
+
+/// Resolve a mailbox argument to its canonical name, or `None`.
+pub fn canonical_mailbox(name: &str) -> Option<&'static str> {
+    MAILBOXES.iter().copied().find(|m| m.eq_ignore_ascii_case(name))
 }
 
 impl Session {
@@ -207,11 +217,11 @@ impl Session {
         if self.state == State::NotAuthenticated {
             return response::tagged(tag, Status::Bad, "Not authenticated");
         }
-        let mailbox = cmd.args.first().map(|s| s.as_str()).unwrap_or("");
-        if !mailbox.eq_ignore_ascii_case("INBOX") {
+        let Some(mailbox) = cmd.args.first().and_then(|s| canonical_mailbox(s)) else {
             return response::tagged(tag, Status::No, "Mailbox does not exist");
-        }
-        let messages = match self.store.list_messages(self.user_id) {
+        };
+        let read_only = cmd.name == "EXAMINE";
+        let messages = match self.store.list_messages_in(self.user_id, mailbox) {
             Ok(m) => m,
             Err(e) => return self.store_err(tag, e),
         };
@@ -220,14 +230,16 @@ impl Session {
         let uidvalidity = messages.first().map(|m| m.uidvalidity).unwrap_or(1);
         let uidnext = self
             .store
-            .uidnext(self.user_id)
+            .uidnext_in(self.user_id, mailbox)
             .unwrap_or(messages.first().map(|m| m.uid + 1).unwrap_or(1));
         let mut out = response::select_responses(exists, unseen, uidvalidity, uidnext);
+        let mode = if read_only { "READ-ONLY" } else { "READ-WRITE" };
         out.push_str(&response::tagged(
             tag,
             Status::Ok,
-            "[READ-WRITE] SELECT completed",
+            &format!("[{mode}] {} completed", if read_only { "EXAMINE" } else { "SELECT" }),
         ));
+        self.selected_mailbox = mailbox.to_string();
         self.state = State::Selected;
         out
     }
@@ -238,8 +250,11 @@ impl Session {
         }
         let pattern = cmd.args.get(1).map(|s| s.as_str()).unwrap_or("");
         let mut out = String::new();
-        if pattern == "*" || pattern.eq_ignore_ascii_case("INBOX") || pattern.is_empty() {
+        if pattern.is_empty() || pattern == "*" || pattern.eq_ignore_ascii_case("INBOX") {
             out.push_str(&response::untagged(r#"LIST (\HasNoChildren) "/" "INBOX""#));
+        }
+        if pattern.is_empty() || pattern == "*" || pattern.eq_ignore_ascii_case("Sent") {
+            out.push_str(&response::untagged(r#"LIST (\HasNoChildren) "/" "Sent""#));
         }
         out.push_str(&response::tagged(tag, Status::Ok, "LIST completed"));
         out
@@ -258,11 +273,10 @@ impl Session {
         if self.state == State::NotAuthenticated {
             return response::tagged(tag, Status::Bad, "Not authenticated");
         }
-        let mailbox = cmd.args.first().map(|s| s.as_str()).unwrap_or("");
-        if !mailbox.eq_ignore_ascii_case("INBOX") {
+        let Some(mailbox) = cmd.args.first().and_then(|s| canonical_mailbox(s)) else {
             return response::tagged(tag, Status::No, "Mailbox does not exist");
-        }
-        let messages = match self.store.list_messages(self.user_id) {
+        };
+        let messages = match self.store.list_messages_in(self.user_id, mailbox) {
             Ok(m) => m,
             Err(e) => return self.store_err(tag, e),
         };
@@ -270,7 +284,7 @@ impl Session {
         let unseen = messages.iter().filter(|m| !m.flags.is_seen()).count();
         let uidnext = self
             .store
-            .uidnext(self.user_id)
+            .uidnext_in(self.user_id, mailbox)
             .unwrap_or((messages_count as u32) + 1);
         let uidvalidity = messages.first().map(|m| m.uidvalidity).unwrap_or(1);
         let recent = 0; // v1 tracks no RECENT state.
@@ -309,7 +323,7 @@ impl Session {
             }
             _ => return response::tagged(tag, Status::Bad, "FETCH requires a sequence set"),
         };
-        let messages = match self.store.list_messages(self.user_id) {
+        let messages = match self.store.list_messages_in(self.user_id, &self.selected_mailbox) {
             Ok(m) => m,
             Err(e) => return self.store_err(tag, e),
         };
@@ -327,7 +341,10 @@ impl Session {
                 continue;
             }
             let body = if needs_body {
-                let msg = match self.store.fetch_message(self.user_id, meta.id) {
+                let msg = match self
+                    .store
+                    .fetch_message_in(self.user_id, &self.selected_mailbox, meta.id)
+                {
                     Ok(m) => m,
                     Err(e) => return self.store_err(tag, e),
                 };
@@ -386,7 +403,7 @@ impl Session {
             }
             _ => return response::tagged(tag, Status::Bad, "STORE requires arguments"),
         };
-        let messages = match self.store.list_messages(self.user_id) {
+        let messages = match self.store.list_messages_in(self.user_id, &self.selected_mailbox) {
             Ok(m) => m,
             Err(e) => return self.store_err(tag, e),
         };
@@ -400,7 +417,10 @@ impl Session {
             if !in_range(range, meta.uid, messages.len() as u32) {
                 continue;
             }
-            if let Err(e) = self.store.set_flags(self.user_id, meta.id, mask, value) {
+            if let Err(e) = self
+                .store
+                .set_flags_in(self.user_id, &self.selected_mailbox, meta.id, mask, value)
+            {
                 return self.store_err(tag, e);
             }
             // Reflect the *updated* flag state in the response.
@@ -424,7 +444,7 @@ impl Session {
         if self.state != State::Selected {
             return response::tagged(tag, Status::Bad, "No mailbox selected");
         }
-        let messages = match self.store.list_messages(self.user_id) {
+        let messages = match self.store.list_messages_in(self.user_id, &self.selected_mailbox) {
             Ok(m) => m,
             Err(e) => return self.store_err(tag, e),
         };
@@ -468,7 +488,7 @@ impl Session {
         if self.state != State::Selected {
             return response::tagged(tag, Status::Bad, "No mailbox selected");
         }
-        match self.store.expunge(self.user_id) {
+        match self.store.expunge_in(self.user_id, &self.selected_mailbox) {
             Ok(uids) => {
                 let mut out = String::new();
                 for u in uids {
@@ -801,6 +821,12 @@ fn header_lines(meta: &talk_mailstore::MessageMeta, filter: Option<(&[String], b
     }
     hdrs.push(("Date".to_string(), format_internaldate(meta.internaldate)));
     hdrs.push(("Message-ID".to_string(), format!("<{}>", meta.message_id)));
+    if let Some(state) = &meta.tx_state {
+        hdrs.push(("X-Talk-Txn-Status".to_string(), state.clone()));
+        if let Some(tx_id) = meta.tx_id {
+            hdrs.push(("X-Talk-Txn-Id".to_string(), tx_id.to_string()));
+        }
+    }
     let mut out = String::new();
     for (name, value) in &hdrs {
         let keep = match &filter {
