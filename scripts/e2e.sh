@@ -31,7 +31,7 @@ INVOICE_FILE="$(mktemp)"
 LOG_DIR="$(mktemp -d)"
 
 SENDER_USER="sender"
-RECIPIENT_USER="recipient"
+RECIPIENT_USER="violet"
 PW="e2e-pw"
 
 # Main daemon: stygian.io on 1465 (ZSMTP) / 1144 (IMAPS) + 1430 (unsafe plaintext IMAP)
@@ -42,9 +42,22 @@ MAIN_IMAP_UNSAFE=1430
 CP_ZSMTP=1466
 CP_IMAP_UNSAFE=1146
 
+# Whether the script launched the daemons (only launched ones are killed on exit).
+MAIN_LAUNCHED=0
+CP_LAUNCHED=0
+
+# Whether a TCP port already has a listener.
+port_engaged() {
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+}
+
 cleanup() {
-    pkill -f "$TALKD --config $MAIN_CONFIG" 2>/dev/null || true
-    pkill -f "$TALKD --config $CP_CONFIG" 2>/dev/null || true
+    if [ "$MAIN_LAUNCHED" = "1" ]; then
+        pkill -f "$TALKD --config $MAIN_CONFIG" 2>/dev/null || true
+    fi
+    if [ "$CP_LAUNCHED" = "1" ]; then
+        pkill -f "$TALKD --config $CP_CONFIG" 2>/dev/null || true
+    fi
     rm -f "$INVOICE_FILE"
     rm -rf "$LOG_DIR"
 }
@@ -59,17 +72,28 @@ say "building talkd + talkctl"
 # The main daemon's public domain key: what the sender verifies against.
 MAIN_PUBKEY="$("$TALKCTL" --config "$MAIN_CONFIG" domainkey pubkey)"
 
-say "starting main daemon (stygian.io)  zsmtp=$MAIN_ZSMTP imap(plain)=$MAIN_IMAP_UNSAFE"
-UNSAFE_NO_TLS=1 UNSAFE_IMAP_PORT=$MAIN_IMAP_UNSAFE \
-    "$TALKD" --config "$MAIN_CONFIG" >"$LOG_DIR/main.log" 2>&1 &
+if port_engaged "$MAIN_ZSMTP"; then
+    say "port $MAIN_ZSMTP engaged — main daemon already running, skipping launch"
+else
+    say "starting main daemon (stygian.io)  zsmtp=$MAIN_ZSMTP imap(plain)=$MAIN_IMAP_UNSAFE"
+    UNSAFE_NO_TLS=1 UNSAFE_IMAP_PORT=$MAIN_IMAP_UNSAFE \
+        "$TALKD" --config "$MAIN_CONFIG" >"$LOG_DIR/main.log" 2>&1 &
+    MAIN_LAUNCHED=1
+fi
 
 # The counterparty is the SENDER here, so it must resolve stygian.io.
-say "starting counterparty daemon (example.com)  zsmtp=$CP_ZSMTP imap(plain)=$CP_IMAP_UNSAFE"
-UNSAFE_NO_TLS=1 UNSAFE_IMAP_PORT=$CP_IMAP_UNSAFE \
-    COUNTERPARTY_DOMAIN=stygian.io \
-    COUNTERPARTY_PORT_SMTP=$MAIN_ZSMTP \
-    COUNTERPARTY_DOMAINKEY_HEX="$MAIN_PUBKEY" \
-    "$TALKD" --config "$CP_CONFIG" >"$LOG_DIR/cp.log" 2>&1 &
+if port_engaged "$CP_ZSMTP"; then
+    say "port $CP_ZSMTP engaged — counterparty daemon already running, skipping launch"
+    say "note: it must have been started with COUNTERPARTY_DOMAIN=stygian.io COUNTERPARTY_PORT_SMTP=$MAIN_ZSMTP COUNTERPARTY_DOMAINKEY_HEX=$MAIN_PUBKEY"
+else
+    say "starting counterparty daemon (example.com)  zsmtp=$CP_ZSMTP imap(plain)=$CP_IMAP_UNSAFE"
+    UNSAFE_NO_TLS=1 UNSAFE_IMAP_PORT=$CP_IMAP_UNSAFE \
+        COUNTERPARTY_DOMAIN=stygian.io \
+        COUNTERPARTY_PORT_SMTP=$MAIN_ZSMTP \
+        COUNTERPARTY_DOMAINKEY_HEX="$MAIN_PUBKEY" \
+        "$TALKD" --config "$CP_CONFIG" >"$LOG_DIR/cp.log" 2>&1 &
+    CP_LAUNCHED=1
+fi
 
 sleep 2
 
