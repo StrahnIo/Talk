@@ -586,8 +586,13 @@ fn uid_fetch_lowercase_sections() {
     let mut s = session_with(store);
     s.handle(&parse_cmd("A1 LOGIN alice secret"));
     s.handle(&parse_cmd("A2 SELECT INBOX"));
-    let out = s.handle(&parse_cmd("A3 UID fetch 1 (BODY.PEEK[HEADER.FIELDS (SUBJECT)])"));
-    assert!(out.contains("BODY[HEADER.FIELDS (SUBJECT)] {"), "got: {out}");
+    let out = s.handle(&parse_cmd(
+        "A3 UID fetch 1 (BODY.PEEK[HEADER.FIELDS (SUBJECT)])",
+    ));
+    assert!(
+        out.contains("BODY[HEADER.FIELDS (SUBJECT)] {"),
+        "got: {out}"
+    );
     assert!(out.contains("Subject: New sealed invoice"), "got: {out}");
     assert!(out.contains("A3 OK FETCH completed"));
 }
@@ -604,7 +609,10 @@ fn uid_store_lowercase() {
     // The flag actually stuck.
     let out = s.handle(&parse_cmd("A4 UID search UNSEEN"));
     assert!(out.contains("SEARCH "), "got: {out}");
-    assert!(!out.contains("SEARCH 1"), "message should now be seen: {out}");
+    assert!(
+        !out.contains("SEARCH 1"),
+        "message should now be seen: {out}"
+    );
 }
 
 #[test]

@@ -139,7 +139,11 @@ async fn uid_fetch_flags_returns_uid() {
         .await;
     assert_eq!(fetches.len(), 1, "one message");
     let fetch = fetches.into_iter().next().unwrap().expect("fetch ok");
-    assert_eq!(fetch.uid, Some(1), "UID must be present in a UID FETCH response");
+    assert_eq!(
+        fetch.uid,
+        Some(1),
+        "UID must be present in a UID FETCH response"
+    );
 
     session.logout().await.expect("logout");
 }
