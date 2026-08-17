@@ -3,7 +3,6 @@
 use ed25519_dalek::SigningKey;
 use std::path::Path;
 use std::sync::Arc;
-use talk_core::TemplateEngine as _;
 use talk_imap::server::MailboxEvent;
 use talk_mailstore::{
     MessageFlags, NewMessage, NewTransaction, SqliteMailStore, TxDirection, TxState,
@@ -131,29 +130,20 @@ impl StoreDeliverySink {
                 return (fallback_subject, body.to_vec());
             }
         };
-        let data = serde_json::json!({
-            "sender_name": sender_mailbox,
-            "sender_address": sender_mailbox,
-            "amount": "",
-            "invoice": String::from_utf8_lossy(body),
-            "received_at": crate::template::received_at(),
-        });
-        let engine = talk_core::TeraEngine;
-        let subject = match engine.render(&spec.subject, &data) {
-            Ok(s) => s,
+        match talk_core::render_invoice(
+            &spec,
+            sender_mailbox,
+            sender_mailbox,
+            "",
+            &String::from_utf8_lossy(body),
+            &crate::template::received_at(),
+        ) {
+            Ok((subject, html)) => (subject, html.into_bytes()),
             Err(e) => {
-                warn!(error = %e, "template subject render failed");
-                return (fallback_subject, body.to_vec());
+                warn!(error = %e, "template render failed; delivering raw");
+                (fallback_subject, body.to_vec())
             }
-        };
-        let html = match engine.render(&spec.body, &data) {
-            Ok(h) => h,
-            Err(e) => {
-                warn!(error = %e, "template body render failed");
-                return (subject, body.to_vec());
-            }
-        };
-        (subject, html.into_bytes())
+        }
     }
 }
 

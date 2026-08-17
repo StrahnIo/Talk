@@ -258,10 +258,29 @@ pub(crate) fn record_outbound(
     let Some(user) = ctx.store.get_user(sender_username).ok().flatten() else {
         return;
     };
+    // Render the Sent copy through the configured template so it arrives as
+    // the HTML form (like the receiving side).
+    let (subject, stored_body) = match talk_core::resolve_template(
+        ctx.cfg.mailbox.template_path.as_deref(),
+        &ctx.cfg.general.data_dir,
+    ) {
+        Ok(spec) => match talk_core::render_invoice(
+            &spec,
+            &sender_mailbox,
+            &sender_mailbox,
+            "",
+            &String::from_utf8_lossy(body),
+            &talk_core::received_at(),
+        ) {
+            Ok((s, b)) => (s, b.into_bytes()),
+            Err(_) => ("Sent invoice".to_string(), body.to_vec()),
+        },
+        Err(_) => ("Sent invoice".to_string(), body.to_vec()),
+    };
     let msg = NewMessage {
         message_id: message_id.to_string(),
-        subject: "Sent invoice".to_string(),
-        body: body.to_vec(),
+        subject,
+        body: stored_body,
         flags: MessageFlags::default(),
         sender: recipient_mailbox.to_string(),
         trust_state: "unverified".to_string(),

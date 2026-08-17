@@ -9,26 +9,12 @@ pub fn resolve_template(
     template_path: Option<&Path>,
     data_dir: &Path,
 ) -> Result<TemplateSpec, TemplateError> {
-    if let Some(path) = template_path {
-        return TemplateSpec::load(path, "invoice")?.ok_or_else(|| {
-            TemplateError::Render(format!(
-                "configured template file {} not found",
-                path.display()
-            ))
-        });
-    }
-    match TemplateSpec::load(&data_dir.join("template.toml"), "invoice")? {
-        Some(spec) => Ok(spec),
-        None => Ok(TemplateSpec::default_invoice()),
-    }
+    talk_core::resolve_template(template_path, data_dir)
 }
 
 /// A human-readable UTC timestamp for the template context.
 pub fn received_at() -> String {
-    use time::format_description::well_known::Rfc3339;
-    time::OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "unknown".to_string())
+    talk_core::received_at()
 }
 
 /// `n` random bytes as hex (message ids etc.).

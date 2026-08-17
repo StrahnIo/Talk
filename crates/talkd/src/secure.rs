@@ -176,10 +176,33 @@ impl SecureMailboxService {
         let Some(user) = self.store.get_user(sender_username).ok().flatten() else {
             return;
         };
+        // Render through the daemon's template (like the receiving side), so
+        // the Sent copy is also the HTML form.
+        let sender_mailbox_disp = format!("{sender_username}@{}", self.sender_domain);
+        let (subject, stored_body) = match self.resolve_template() {
+            Ok(spec) => match talk_core::render_invoice(
+                &spec,
+                &sender_mailbox_disp,
+                &sender_mailbox_disp,
+                "",
+                &String::from_utf8_lossy(body),
+                &crate::template::received_at(),
+            ) {
+                Ok((s, b)) => (s, b.into_bytes()),
+                Err(e) => {
+                    warn!(error = %e, "outbound template render failed");
+                    ("Sent invoice".to_string(), body.to_vec())
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, "outbound template resolve failed");
+                ("Sent invoice".to_string(), body.to_vec())
+            }
+        };
         let msg = NewMessage {
             message_id: message_id.to_string(),
-            subject: "Sent invoice".to_string(),
-            body: body.to_vec(),
+            subject,
+            body: stored_body,
             flags: MessageFlags::default(),
             sender: recipient_mailbox.to_string(),
             trust_state: "unverified".to_string(),
