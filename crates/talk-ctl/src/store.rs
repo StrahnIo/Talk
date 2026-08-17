@@ -50,6 +50,15 @@ impl Ctx {
     }
 }
 
+/// Print the daemon's public domain key (hex, 32 bytes). This is what a peer
+/// daemon needs as `COUNTERPARTY_DOMAINKEY_HEX` to verify the handshake.
+pub fn domainkey_pubkey(config_path: Option<&Path>) -> Result<(), CtlError> {
+    let ctx = Ctx::load(config_path)?;
+    let domain_key = ctx.domain_key()?;
+    println!("{}", hex::encode(domain_key.verifying_key().to_bytes()));
+    Ok(())
+}
+
 /// Summary line: daemon identity + store shape.
 pub fn status(config_path: Option<&Path>) -> Result<(), CtlError> {
     let ctx = Ctx::load(config_path)?;

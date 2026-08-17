@@ -872,3 +872,17 @@ fn tx_ledger_lifecycle() {
     let out = run(&[&cfg_flag(&s.cfg), "tx", "resolve", &out_tx.id.to_string()]);
     err_contains(&out, "only inbound", "resolve on outbound rejected");
 }
+
+#[test]
+fn domainkey_pubkey_prints_hex() {
+    let s = setup();
+    let out = run(&[&cfg_flag(&s.cfg), "domainkey", "pubkey"]);
+    ok(&out, "domainkey pubkey");
+    let pk = stdout(&out).trim().to_string();
+    assert_eq!(pk.len(), 64, "32 bytes hex: {pk}");
+    assert!(pk.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // Stable across runs.
+    let out2 = run(&[&cfg_flag(&s.cfg), "domainkey", "pubkey"]);
+    assert_eq!(stdout(&out2).trim(), pk);
+}

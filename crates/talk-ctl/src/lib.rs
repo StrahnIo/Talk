@@ -80,6 +80,11 @@ pub enum Command {
         #[command(subcommand)]
         action: tx::TxAction,
     },
+    /// The daemon's public domain key.
+    Domainkey {
+        #[command(subcommand)]
+        action: DomainkeyAction,
+    },
     /// Deliver an invoice to a recipient mailbox.
     Send {
         sender: String,
@@ -126,6 +131,13 @@ pub enum EmulateAction {
         #[arg(long)]
         invoice: PathBuf,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DomainkeyAction {
+    /// Print the daemon's public domain key (hex, 32 bytes) from
+    /// `<data_dir>/domainkey`. Use it as the peer's `COUNTERPARTY_DOMAINKEY_HEX`.
+    Pubkey,
 }
 
 #[derive(Debug, Subcommand)]
@@ -245,6 +257,9 @@ pub fn run(cli: Cli) -> Result<(), CtlError> {
             ),
         },
         Command::Tx { action } => tx::run(config, action),
+        Command::Domainkey { action } => match action {
+            DomainkeyAction::Pubkey => store::domainkey_pubkey(config),
+        },
         Command::Send {
             sender,
             recipient,

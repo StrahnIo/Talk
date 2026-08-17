@@ -16,9 +16,13 @@ use thiserror::Error;
 /// The unified DNS service name for ZSMTP discovery.
 pub const SRV_SERVICE: &str = "_zpayments._tcp";
 
-/// The designated local-counterparty domain: resolution for it skips DNS and
-/// resolves straight to a localhost port (see `COUNTERPARTY_PORT_SMTP`).
+/// The default designated local-counterparty domain: resolution for it skips
+/// DNS and resolves straight to a localhost port (see `COUNTERPARTY_PORT_SMTP`).
+/// Overridable via `COUNTERPARTY_DOMAIN` so either side can resolve the other.
 pub const COUNTERPARTY_DOMAIN: &str = "example.com";
+
+/// Env var: the designated counterparty domain (default `example.com`).
+pub const COUNTERPARTY_DOMAIN_ENV: &str = "COUNTERPARTY_DOMAIN";
 
 /// Env var: the counterparty's ZSMTP TCP port on localhost (`_zpayments._tcp`
 /// SRV analog). Pattern: `COUNTERPARTY_PORT_<SERVICE>`.
@@ -28,9 +32,14 @@ pub const COUNTERPARTY_PORT_SMTP: &str = "COUNTERPARTY_PORT_SMTP";
 /// AUTH/ADDR handshake verifies without DNS.
 pub const COUNTERPARTY_DOMAINKEY_HEX: &str = "COUNTERPARTY_DOMAINKEY_HEX";
 
+/// The currently configured counterparty domain.
+pub fn counterparty_domain() -> String {
+    std::env::var(COUNTERPARTY_DOMAIN_ENV).unwrap_or_else(|_| COUNTERPARTY_DOMAIN.to_string())
+}
+
 /// Whether `domain` is the designated local counterparty.
 pub fn is_counterparty(domain: &str) -> bool {
-    domain.eq_ignore_ascii_case(COUNTERPARTY_DOMAIN)
+    domain.eq_ignore_ascii_case(&counterparty_domain())
 }
 
 /// The counterparty's local endpoint from `COUNTERPARTY_PORT_SMTP`.
@@ -45,7 +54,7 @@ fn counterparty_endpoint() -> Option<String> {
 /// The counterparty's public domain key from `COUNTERPARTY_DOMAINKEY_HEX`.
 fn counterparty_key() -> Result<VerifyingKey, ResolverError> {
     let raw = std::env::var(COUNTERPARTY_DOMAINKEY_HEX)
-        .map_err(|_| ResolverError::NotFound(COUNTERPARTY_DOMAIN.to_string()))?;
+        .map_err(|_| ResolverError::NotFound(counterparty_domain()))?;
     let bytes = hex::decode(raw.trim()).map_err(|e| ResolverError::InvalidKey(e.to_string()))?;
     let key: [u8; 32] = bytes
         .try_into()
@@ -396,5 +405,22 @@ mod tests {
         unsafe { std::env::remove_var(COUNTERPARTY_DOMAINKEY_HEX) };
         let r = DohDomainKeyResolver::default();
         assert!(r.resolving_key(COUNTERPARTY_DOMAIN).is_err());
+    }
+
+    #[test]
+    fn counterparty_domain_is_env_configurable() {
+        let _g = ENV_LOCK.lock().unwrap();
+        // Default is example.com.
+        unsafe { std::env::remove_var(COUNTERPARTY_DOMAIN_ENV) };
+        assert!(is_counterparty("example.com"));
+        assert!(!is_counterparty("stygian.io"));
+
+        // Override so the example.com daemon can resolve stygian.io.
+        unsafe { std::env::set_var(COUNTERPARTY_DOMAIN_ENV, "stygian.io") };
+        assert!(is_counterparty("stygian.io"));
+        assert!(is_counterparty("STYGIAN.IO"));
+        assert!(!is_counterparty("example.com"));
+        assert_eq!(counterparty_domain(), "stygian.io");
+        unsafe { std::env::remove_var(COUNTERPARTY_DOMAIN_ENV) };
     }
 }
