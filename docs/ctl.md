@@ -96,16 +96,22 @@ headers).
 
 ## Local counterparty (no DNS)
 
-The designated domain **`example.com`** skips SRV discovery and resolves to a
+The designated domain (default **`example.com`**, overridable via the
+`COUNTERPARTY_DOMAIN` env var) skips SRV discovery and resolves to a
 localhost daemon:
 
 - `COUNTERPARTY_PORT_SMTP` — the counterparty's ZSMTP TCP port (pattern:
   `COUNTERPARTY_PORT_<SERVICE>`). Unset → falls back to `send_endpoint`.
 - `COUNTERPARTY_DOMAINKEY_HEX` — the counterparty's public domain key (hex,
-  32 bytes; from its `data_dir/domainkey`), so the handshake verifies.
+  32 bytes; `talkctl domainkey pubkey` prints your daemon's), so the handshake
+  verifies.
 
-Used automatically by `send` (both the daemon path and the direct fallback),
-enabling two local daemons to run the full flow with no DNS.
+Setting `COUNTERPARTY_DOMAIN` to the *receiving* domain lets either side
+resolve the other — the `example.com` daemon started with
+`COUNTERPARTY_DOMAIN=stygian.io COUNTERPARTY_PORT_SMTP=1465
+COUNTERPARTY_DOMAINKEY_HEX=<main pubkey>` can send to `stygian.io`. Used
+automatically by `send` (daemon path + direct fallback). See
+`scripts/e2e.sh` for a working example.com → stygian.io run.
 
 ## Security notes
 

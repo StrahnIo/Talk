@@ -383,18 +383,22 @@ domain is stripped and the local user is resolved. Any other domain
 
 ## LOCAL COUNTERPARTY (NO DNS)
 
-The designated domain **`example.com`** skips DNS SRV resolution and resolves
-to a localhost daemon, for running two local instances without DNS:
+The designated domain (default **`example.com`**, overridable via the
+`COUNTERPARTY_DOMAIN` env var) skips DNS SRV resolution and resolves to a
+localhost daemon, for running two local instances without DNS:
 
 - `COUNTERPARTY_PORT_SMTP` — the counterparty's ZSMTP TCP port (naming
   pattern: `COUNTERPARTY_PORT_<SERVICE>`). When unset, `send` falls back to
   the `send_endpoint` config override.
 - `COUNTERPARTY_DOMAINKEY_HEX` — the counterparty's public domain key (hex,
-  32 bytes; read from its `data_dir/domainkey`), so the AUTH/ADDR handshake
-  still verifies.
+  32 bytes; read from its `data_dir/domainkey` or `talkctl domainkey pubkey`),
+  so the AUTH/ADDR handshake still verifies.
 
-Both the daemon `SEND` path and `talkctl send`/`tx retry` use these
-automatically.
+Setting `COUNTERPARTY_DOMAIN` to the *receiving* domain lets either side
+resolve the other (e.g. the `example.com` daemon started with
+`COUNTERPARTY_DOMAIN=stygian.io` can send to `stygian.io`). Both the daemon
+`SEND` path and `talkctl send`/`tx retry` use these automatically. See
+`scripts/e2e.sh` for a working two-daemon example.
 
 ## EXIT STATUS
 
