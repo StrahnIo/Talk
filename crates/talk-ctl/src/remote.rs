@@ -179,12 +179,75 @@ async fn direct_send(
         payload,
         body,
     };
-    invoice
-        .deliver()
-        .await
-        .map_err(|e| CtlError::msg(format!("deliver: {e}")))?;
+    let result = invoice.deliver().await;
+    let state = match &result {
+        Ok(()) => talk_mailstore::TxState::Sent,
+        Err(talk_protocol::ClientError::RetryLater(_)) => talk_mailstore::TxState::Retrying,
+        Err(_) => talk_mailstore::TxState::Failed,
+    };
+    record_outbound(
+        ctx,
+        sender,
+        recipient,
+        &invoice.message_id,
+        &invoice.body,
+        state,
+    );
+    result.map_err(|e| CtlError::msg(format!("deliver: {e}")))?;
     println!("delivered to {recipient}");
     Ok(())
+}
+
+/// Record an outbound ledger transaction (and a Sent-mailbox copy).
+/// Idempotent per (direction, message_id): a retry transitions the row.
+fn record_outbound(
+    ctx: &Ctx,
+    sender_username: &str,
+    recipient_mailbox: &str,
+    message_id: &str,
+    body: &[u8],
+    state: talk_mailstore::TxState,
+) {
+    use talk_mailstore::{MessageFlags, NewMessage, NewTransaction, TxDirection};
+    let sender_mailbox = format!("{sender_username}@{}", ctx.cfg.general.domain);
+    let tx = match ctx
+        .store
+        .tx_by_message_id(TxDirection::Out, message_id)
+        .ok()
+        .flatten()
+    {
+        Some(existing) => {
+            let _ = ctx.store.tx_transition(existing.id, state);
+            existing
+        }
+        None => match ctx.store.tx_create(NewTransaction {
+            direction: TxDirection::Out,
+            state,
+            sender_mailbox,
+            recipient_mailbox: recipient_mailbox.to_string(),
+            amount: String::new(),
+            binding: None,
+            message_id: message_id.to_string(),
+            outbound_body: Some(body.to_vec()),
+        }) {
+            Ok(t) => t,
+            Err(_) => return,
+        },
+    };
+    let Some(user) = ctx.store.get_user(sender_username).ok().flatten() else {
+        return;
+    };
+    let msg = NewMessage {
+        message_id: message_id.to_string(),
+        subject: "Sent invoice".to_string(),
+        body: body.to_vec(),
+        flags: MessageFlags::default(),
+        sender: recipient_mailbox.to_string(),
+        trust_state: "unverified".to_string(),
+    };
+    if let Ok(meta) = ctx.store.append_message_to(user.id, talk_mailstore::SENT, msg) {
+        let _ = ctx.store.tx_link_message(tx.id, meta.id);
+    }
 }
 
 // ---------------------------------------------------------------------------

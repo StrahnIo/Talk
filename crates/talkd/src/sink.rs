@@ -4,7 +4,7 @@ use ed25519_dalek::SigningKey;
 use std::path::Path;
 use std::sync::Arc;
 use talk_imap::server::MailboxEvent;
-use talk_mailstore::{MessageFlags, NewMessage, SqliteMailStore};
+use talk_mailstore::{MessageFlags, NewMessage, NewTransaction, SqliteMailStore, TxDirection, TxState};
 use talk_protocol::{DeliveryOutcome, DeliverySink, Keyring, Payload, TrustState, UserDirectory};
 use tokio::sync::broadcast;
 use tracing::warn;
@@ -119,32 +119,59 @@ impl StoreDeliverySink {
         }
     }
 
-    /// Append a message to a user's INBOX and notify IDLE sessions.
+    /// Append a message to a user's INBOX, notify IDLE sessions, and return
+    /// the appended message metadata (for ledger linking).
     fn append_and_broadcast(
         &self,
         user_id: i64,
         msg: NewMessage,
         message_id: &str,
-    ) -> DeliveryOutcome {
-        match self.store.append_message(user_id, msg) {
-            Ok(_) => {}
+    ) -> Result<talk_mailstore::MessageMeta, DeliveryOutcome> {
+        let meta = match self.store.append_message(user_id, msg) {
+            Ok(m) => m,
             Err(talk_mailstore::StoreError::DuplicateMessage(_)) => {
-                return DeliveryOutcome::Rejected {
+                return Err(DeliveryOutcome::Rejected {
                     reason: format!("duplicate message id: {message_id}"),
-                };
+                });
             }
             Err(e) => {
                 warn!(error = %e, "append failed");
-                return DeliveryOutcome::RetryLater {
+                return Err(DeliveryOutcome::RetryLater {
                     reason: "storage error".into(),
-                };
+                });
             }
-        }
+        };
         if let Some(events) = &self.events {
             let _ = events.send(MailboxEvent::MessageAppended { user_id });
         }
-        DeliveryOutcome::Accepted {
+        Ok(meta)
+    }
+
+    /// Record an inbound ledger transaction for a delivered message
+    /// (best-effort: a ledger failure never fails delivery).
+    fn record_inbound_tx(
+        &self,
+        sender_mailbox: &str,
+        recipient_mailbox: &str,
+        amount: &str,
+        message_id: &str,
+        message_row_id: i64,
+    ) {
+        let result = self.store.tx_create(NewTransaction {
+            direction: TxDirection::In,
+            state: TxState::Opaque,
+            sender_mailbox: sender_mailbox.to_string(),
+            recipient_mailbox: recipient_mailbox.to_string(),
+            amount: amount.to_string(),
+            binding: None,
             message_id: message_id.to_string(),
+            outbound_body: None,
+        });
+        match result {
+            Ok(tx) => {
+                let _ = self.store.tx_link_message(tx.id, message_row_id);
+            }
+            Err(e) => warn!(error = %e, "ledger record failed"),
         }
     }
 
@@ -155,6 +182,7 @@ impl StoreDeliverySink {
         &self,
         recipient_user: &str,
         sender_label: &str,
+        amount: &str,
         message_id: &str,
         subject: &str,
         body: &[u8],
@@ -175,7 +203,15 @@ impl StoreDeliverySink {
             sender: sender_label.to_string(),
             trust_state,
         };
-        self.append_and_broadcast(user.id, msg, message_id)
+        match self.append_and_broadcast(user.id, msg, message_id) {
+            Ok(meta) => {
+                self.record_inbound_tx(sender_label, recipient_user, amount, message_id, meta.id);
+                DeliveryOutcome::Accepted {
+                    message_id: message_id.to_string(),
+                }
+            }
+            Err(outcome) => outcome,
+        }
     }
 }
 
@@ -209,7 +245,15 @@ impl DeliverySink for StoreDeliverySink {
             sender: sender_mailbox.to_string(),
             trust_state,
         };
-        self.append_and_broadcast(user.id, msg, message_id)
+        match self.append_and_broadcast(user.id, msg, message_id) {
+            Ok(meta) => {
+                self.record_inbound_tx(sender_mailbox, recipient_mailbox, "", message_id, meta.id);
+                DeliveryOutcome::Accepted {
+                    message_id: message_id.to_string(),
+                }
+            }
+            Err(outcome) => outcome,
+        }
     }
 }
 
@@ -244,6 +288,33 @@ mod tests {
         let list = store.list_messages(user_id).expect("list");
         assert_eq!(list[0].sender, "bob@example.org");
         assert_eq!(list[0].trust_state, "unverified");
+    }
+
+    #[test]
+    fn deliver_records_inbound_transaction() {
+        let (_dir, store, user_id) = store_with_user();
+        let sink = StoreDeliverySink::new(store.clone());
+        let outcome = sink.deliver(
+            "bob@example.org",
+            "tx-1",
+            "alice@example.org",
+            P::Plaintext,
+            b"body",
+        );
+        assert!(matches!(outcome, DeliveryOutcome::Accepted { .. }));
+
+        let tx = store
+            .tx_by_message_id(TxDirection::In, "tx-1")
+            .expect("get")
+            .expect("exists");
+        assert_eq!(tx.state, TxState::Opaque);
+        assert_eq!(tx.recipient_mailbox, "alice@example.org");
+        assert_eq!(tx.sender_mailbox, "bob@example.org");
+        assert!(tx.amount.is_empty(), "real ZSMTP has no amount");
+
+        // The inbox message is linked to the opaque transaction.
+        let msgs = store.list_messages(user_id).expect("list");
+        assert_eq!(msgs[0].tx_state.as_deref(), Some("opaque"));
     }
 
     #[test]

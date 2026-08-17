@@ -4,8 +4,8 @@ use crate::sink::StoreDeliverySink;
 use ed25519_dalek::SigningKey;
 use std::path::PathBuf;
 use std::sync::Arc;
-use talk_core::template::{TemplateEngine, TemplateSpec, TeraEngine};
-use talk_mailstore::{SqliteMailStore, hash_password};
+use talk_core::template::{TeraEngine, TemplateEngine, TemplateSpec};
+use talk_mailstore::{MessageFlags, NewMessage, NewTransaction, SqliteMailStore, TxDirection, TxState, hash_password};
 use talk_protocol::attestation::{
     Attestation, AttestationMode, RegistrationAttestation, mint_pair,
 };
@@ -136,6 +136,65 @@ impl SecureMailboxService {
     }
 }
 
+impl SecureMailboxService {
+    /// Record an outbound ledger transaction (and a Sent-mailbox copy).
+    ///
+    /// Idempotent per (direction, message_id): a retry transitions the
+    /// existing row instead of duplicating it.
+    fn record_outbound_tx(
+        &self,
+        sender_username: &str,
+        recipient_mailbox: &str,
+        message_id: &str,
+        body: &[u8],
+        state: TxState,
+    ) {
+        let sender_mailbox = format!("{sender_username}@{}", self.sender_domain);
+        let tx = match self
+            .store
+            .tx_by_message_id(TxDirection::Out, message_id)
+            .ok()
+            .flatten()
+        {
+            Some(existing) => {
+                let _ = self.store.tx_transition(existing.id, state);
+                existing
+            }
+            None => match self.store.tx_create(NewTransaction {
+                direction: TxDirection::Out,
+                state,
+                sender_mailbox,
+                recipient_mailbox: recipient_mailbox.to_string(),
+                amount: String::new(),
+                binding: None,
+                message_id: message_id.to_string(),
+                outbound_body: Some(body.to_vec()),
+            }) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(error = %e, "outbound ledger record failed");
+                    return;
+                }
+            },
+        };
+        // A copy in the sender's Sent mailbox (best-effort; dedup on message_id).
+        let Some(user) = self.store.get_user(sender_username).ok().flatten() else {
+            return;
+        };
+        let msg = NewMessage {
+            message_id: message_id.to_string(),
+            subject: "Sent invoice".to_string(),
+            body: body.to_vec(),
+            flags: MessageFlags::default(),
+            sender: recipient_mailbox.to_string(),
+            trust_state: "unverified".to_string(),
+        };
+        if let Ok(meta) = self.store.append_message_to(user.id, talk_mailstore::SENT, msg) {
+            let _ = self.store.tx_link_message(tx.id, meta.id);
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl AsyncSecureMailboxHandler for SecureMailboxService {
     async fn send(
@@ -156,7 +215,10 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
         // Resolve the receiver's public key.
         let receiver_pub = match self.resolver.resolving_key(receiver_domain) {
             Ok(k) => k,
-            Err(e) => return SendResult::Error(format!("cannot resolve domain key: {e}")),
+            Err(e) => {
+                self.record_outbound_tx(sender_username, recipient_mailbox, message_id, body, TxState::Failed);
+                return SendResult::Error(format!("cannot resolve domain key: {e}"));
+            }
         };
         // Resolve the receiver's ZSMTP endpoint: SRV discovery, with the
         // config `send_endpoint` as a dev override when SRV finds nothing.
@@ -167,7 +229,10 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
                     warn!(error = %e, override = %override_ep, "SRV lookup failed; using send_endpoint override");
                     override_ep.clone()
                 }
-                None => return SendResult::Error(format!("cannot resolve endpoint: {e}")),
+                None => {
+                    self.record_outbound_tx(sender_username, recipient_mailbox, message_id, body, TxState::Failed);
+                    return SendResult::Error(format!("cannot resolve endpoint: {e}"));
+                }
             },
         };
         // Connect over implicit TLS (accept-any-cert; server identity is
@@ -181,7 +246,10 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
         .await
         {
             Ok(c) => c,
-            Err(e) => return SendResult::Error(format!("connect: {e}")),
+            Err(e) => {
+                self.record_outbound_tx(sender_username, recipient_mailbox, message_id, body, TxState::Retrying);
+                return SendResult::Error(format!("connect: {e}"));
+            }
         };
         let user = recipient_mailbox.split('@').next().unwrap_or("");
         if let Err(e) = talk_protocol::send_invoice_over(
@@ -195,8 +263,15 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
         )
         .await
         {
+            let state = if matches!(e, talk_protocol::ClientError::RetryLater(_)) {
+                TxState::Retrying
+            } else {
+                TxState::Failed
+            };
+            self.record_outbound_tx(sender_username, recipient_mailbox, message_id, body, state);
             return SendResult::Error(format!("deliver: {e}"));
         }
+        self.record_outbound_tx(sender_username, recipient_mailbox, message_id, body, TxState::Sent);
         SendResult::Ok(format!("delivered {message_id} to {recipient_mailbox}"))
     }
 
@@ -298,6 +373,7 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
         match self.sink.deliver_emulated(
             recipient_user,
             &payload.sender_name,
+            &payload.amount,
             &message_id,
             &subject,
             body.as_bytes(),
@@ -614,6 +690,19 @@ mod tests {
         let bob = recv_store.get_user("bob").expect("get").expect("exists");
         let msgs = recv_store.list_messages(bob.id).expect("list");
         assert_eq!(msgs.len(), 1, "delivered message present");
+
+        // The sender's store records an outbound transaction + a Sent copy.
+        let out = sender_store.tx_list(Some(TxDirection::Out), None).expect("out list");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].state, TxState::Sent);
+        assert_eq!(out[0].recipient_mailbox, "bob@receiver.example.org");
+        assert_eq!(out[0].outbound_body.as_deref(), Some(&b"opaque"[..]));
+        let alice = sender_store.get_user("alice").expect("get").expect("exists");
+        let sent = sender_store
+            .list_messages_in(alice.id, talk_mailstore::SENT)
+            .expect("sent list");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].sender, "bob@receiver.example.org");
     }
 
     #[test]
@@ -675,6 +764,22 @@ mod tests {
             panic!("expected Error");
         };
         assert!(e.contains("recipient"), "got: {e}");
+    }
+
+    #[test]
+    fn emulate_creates_inbound_transaction_with_amount() {
+        let (svc, store) = service_with_store();
+        let pubkey = hex::encode([3u8; 32]);
+        assert_eq!(svc.register("bob", "pw", &pubkey, None), RegisterResult::Ok);
+
+        let EmulateResult::Ok(_) = svc.emulate("bob", &payload()) else {
+            panic!("expected Ok");
+        };
+        let txs = store.tx_list(Some(TxDirection::In), None).expect("list");
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0].state, TxState::Opaque);
+        assert_eq!(txs[0].amount, "1.5");
+        assert_eq!(txs[0].recipient_mailbox, "bob");
     }
 
     #[test]
