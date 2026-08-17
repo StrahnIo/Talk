@@ -3,6 +3,7 @@
 use ed25519_dalek::SigningKey;
 use std::path::Path;
 use std::sync::Arc;
+use talk_core::TemplateEngine as _;
 use talk_imap::server::MailboxEvent;
 use talk_mailstore::{
     MessageFlags, NewMessage, NewTransaction, SqliteMailStore, TxDirection, TxState,
@@ -75,6 +76,9 @@ pub fn load_or_create_domain_key(data_dir: &Path) -> Result<SigningKey, std::io:
 pub struct StoreDeliverySink {
     store: Arc<SqliteMailStore>,
     events: Option<broadcast::Sender<MailboxEvent>>,
+    /// Template resolution config for rendering real ZSMTP deliveries.
+    template_path: Option<std::path::PathBuf>,
+    template_data_dir: std::path::PathBuf,
 }
 
 impl StoreDeliverySink {
@@ -82,6 +86,8 @@ impl StoreDeliverySink {
         Self {
             store,
             events: None,
+            template_path: None,
+            template_data_dir: std::path::PathBuf::new(),
         }
     }
 
@@ -89,6 +95,65 @@ impl StoreDeliverySink {
     pub fn with_events(mut self, events: broadcast::Sender<MailboxEvent>) -> Self {
         self.events = Some(events);
         self
+    }
+
+    /// Configure template resolution so real ZSMTP deliveries render through
+    /// the daemon's template (like emulation).
+    pub fn with_template(
+        mut self,
+        template_path: Option<std::path::PathBuf>,
+        data_dir: std::path::PathBuf,
+    ) -> Self {
+        self.template_path = template_path;
+        self.template_data_dir = data_dir;
+        self
+    }
+
+    /// Render a real delivery through the configured template. On a template
+    /// error, falls back to the plain payload subject + raw body.
+    fn render_delivery(
+        &self,
+        sender_mailbox: &str,
+        payload: Payload,
+        body: &[u8],
+    ) -> (String, Vec<u8>) {
+        let fallback_subject = match payload {
+            Payload::Sealed => "New sealed invoice".to_string(),
+            Payload::Plaintext => "New invoice".to_string(),
+        };
+        let spec = match crate::template::resolve_template(
+            self.template_path.as_deref(),
+            &self.template_data_dir,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "template resolve failed; delivering raw");
+                return (fallback_subject, body.to_vec());
+            }
+        };
+        let data = serde_json::json!({
+            "sender_name": sender_mailbox,
+            "sender_address": sender_mailbox,
+            "amount": "",
+            "invoice": String::from_utf8_lossy(body),
+            "received_at": crate::template::received_at(),
+        });
+        let engine = talk_core::TeraEngine;
+        let subject = match engine.render(&spec.subject, &data) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "template subject render failed");
+                return (fallback_subject, body.to_vec());
+            }
+        };
+        let html = match engine.render(&spec.body, &data) {
+            Ok(h) => h,
+            Err(e) => {
+                warn!(error = %e, "template body render failed");
+                return (subject, body.to_vec());
+            }
+        };
+        (subject, html.into_bytes())
     }
 }
 
@@ -231,10 +296,9 @@ impl DeliverySink for StoreDeliverySink {
             Ok(u) => u,
             Err(outcome) => return outcome,
         };
-        let subject = match payload {
-            Payload::Sealed => "New sealed invoice".to_string(),
-            Payload::Plaintext => "New invoice".to_string(),
-        };
+        // Real deliveries render through the daemon's template (like
+        // emulation) so they arrive as the configured HTML form.
+        let (subject, stored_body) = self.render_delivery(sender_mailbox, payload, body);
         // Trust state via the keyring: trusted if pinned, else unverified.
         let trust_state = StoreKeyring::new(self.store.clone())
             .state(user.id, sender_mailbox)
@@ -243,7 +307,7 @@ impl DeliverySink for StoreDeliverySink {
         let msg = NewMessage {
             message_id: message_id.to_string(),
             subject,
-            body: body.to_vec(),
+            body: stored_body,
             flags: MessageFlags::default(),
             sender: sender_mailbox.to_string(),
             trust_state,
@@ -348,5 +412,54 @@ mod tests {
         let list = store.list_messages(user_id).expect("list");
         assert_eq!(list[0].sender, "");
         assert_eq!(list[0].trust_state, "unverified");
+    }
+
+    #[test]
+    fn deliver_renders_html_with_template() {
+        let (dir, store, user_id) = store_with_user();
+        std::fs::write(
+            dir.path().join("template.toml"),
+            "[invoice]\nsubject = \"Pay from {{ sender_name }}\"\nbody = \"<html><body>Invoice: {{ invoice }}{% if amount %} Amount: {{ amount }} ZEC{% endif %}</body></html>\"\n",
+        )
+        .expect("template");
+        let sink =
+            StoreDeliverySink::new(store.clone()).with_template(None, dir.path().to_path_buf());
+        let outcome = sink.deliver(
+            "bob@example.org",
+            "m-render",
+            "alice@example.org",
+            P::Sealed,
+            b"invoice body",
+        );
+        assert!(matches!(outcome, DeliveryOutcome::Accepted { .. }));
+
+        let msgs = store.list_messages(user_id).expect("list");
+        let msg = store.fetch_message(user_id, msgs[0].id).expect("fetch");
+        // Real deliveries have no amount → subject + body render from template,
+        // and the empty amount is omitted.
+        assert_eq!(msg.meta.subject, "Pay from bob@example.org");
+        let body = String::from_utf8(msg.body).expect("utf8");
+        assert!(body.contains("<html><body>Invoice: invoice body"), "{body}");
+        assert!(!body.contains("Amount:"), "empty amount omitted: {body}");
+    }
+
+    #[test]
+    fn deliver_without_configured_template_uses_builtin_html() {
+        let (_dir, store, user_id) = store_with_user();
+        let sink = StoreDeliverySink::new(store.clone());
+        let outcome = sink.deliver(
+            "bob@example.org",
+            "m-raw",
+            "alice@example.org",
+            P::Plaintext,
+            b"raw blob",
+        );
+        assert!(matches!(outcome, DeliveryOutcome::Accepted { .. }));
+        let msgs = store.list_messages(user_id).expect("list");
+        let msg = store.fetch_message(user_id, msgs[0].id).expect("fetch");
+        assert_eq!(msg.meta.subject, "Invoice from bob@example.org");
+        let body = String::from_utf8(msg.body).expect("utf8");
+        assert!(body.contains("<!DOCTYPE html>"), "{body}");
+        assert!(body.contains("raw blob"), "{body}");
     }
 }

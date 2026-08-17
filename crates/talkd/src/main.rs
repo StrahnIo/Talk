@@ -9,6 +9,7 @@ use tracing::{error, info, warn};
 
 mod secure;
 mod sink;
+mod template;
 
 #[derive(Debug, Parser)]
 #[command(name = "talkd", version, about = "ZSMTP mail daemon for Zcash")]
@@ -109,8 +110,14 @@ async fn run(
     if let Some(config) = &tls_config {
         imap = imap.with_tls(config.clone());
     }
-    let sink =
-        Arc::new(sink::StoreDeliverySink::new(store.clone()).with_events(imap.event_sender()));
+    let sink = Arc::new(
+        sink::StoreDeliverySink::new(store.clone())
+            .with_events(imap.event_sender())
+            .with_template(
+                cfg.mailbox.template_path.clone(),
+                cfg.general.data_dir.clone(),
+            ),
+    );
 
     // The secure_mailbox handler: wired to the same delivery sink (so local
     // payment emulation broadcasts to IMAP IDLE sessions) and the template

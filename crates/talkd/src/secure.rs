@@ -85,22 +85,9 @@ impl SecureMailboxService {
         self
     }
 
-    /// Resolve the template spec: explicit `template_path` if set (must
-    /// exist), else `<data_dir>/template.toml` if present, else the built-in
-    /// default.
+    /// Resolve the template spec (shared with the delivery sink).
     fn resolve_template(&self) -> Result<TemplateSpec, talk_core::TemplateError> {
-        if let Some(path) = &self.template_path {
-            return TemplateSpec::load(path, "invoice")?.ok_or_else(|| {
-                talk_core::TemplateError::Render(format!(
-                    "configured template file {} not found",
-                    path.display()
-                ))
-            });
-        }
-        match TemplateSpec::load(&self.data_dir.join("template.toml"), "invoice")? {
-            Some(spec) => Ok(spec),
-            None => Ok(TemplateSpec::default_invoice()),
-        }
+        crate::template::resolve_template(self.template_path.as_deref(), &self.data_dir)
     }
 
     /// Override the domain-key resolver (tests / dev).
@@ -456,18 +443,12 @@ fn unix_now() -> i64 {
 
 /// A human-readable UTC timestamp for the template context.
 fn received_at() -> String {
-    use time::format_description::well_known::Rfc3339;
-    time::OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "unknown".to_string())
+    crate::template::received_at()
 }
 
 /// `n` random bytes as hex (message ids etc.).
 fn random_hex(n: usize) -> String {
-    use rand::RngCore;
-    let mut bytes = vec![0u8; n];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    hex::encode(bytes)
+    crate::template::random_hex(n)
 }
 
 #[cfg(test)]

@@ -30,7 +30,7 @@ pub use client::{
     connect_tcp_tls, connect_unix, send_invoice_over,
 };
 pub use dns::{
-    COUNTERPARTY_DOMAIN, COUNTERPARTY_DOMAINKEY_HEX, COUNTERPARTY_DOMAIN_ENV,
+    COUNTERPARTY_DOMAIN, COUNTERPARTY_DOMAIN_ENV, COUNTERPARTY_DOMAINKEY_HEX,
     COUNTERPARTY_PORT_SMTP, DohDomainKeyResolver, DohEndpointResolver, DomainKeyResolver,
     EndpointResolver, ResolverError, SRV_SERVICE, StaticDomainKeyResolver, StaticEndpointResolver,
     counterparty_domain, is_counterparty, parse_srv,

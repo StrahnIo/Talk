@@ -31,17 +31,35 @@ pub struct TemplateSpec {
 impl TemplateSpec {
     /// The built-in invoice template, used when no `template.toml` override is
     /// configured. Context: `sender_name`, `sender_address`, `amount`,
-    /// `invoice`, `received_at`.
+    /// `invoice`, `received_at`. Renders a minimal HTML form (the amount row
+    /// is omitted when `amount` is empty).
     pub fn default_invoice() -> Self {
         Self {
             subject: "Invoice from {{ sender_name }}".to_string(),
             body: [
-                "From:     {{ sender_name }}",
-                "Address:  {{ sender_address }}",
-                "Amount:   {{ amount }} ZEC",
-                "Received: {{ received_at }}",
-                "",
-                "{{ invoice }}",
+                "<!DOCTYPE html>",
+                "<html><head><meta charset=\"utf-8\"><title>Invoice</title></head>",
+                "<body style=\"margin:0;padding:0;background:#f4f6f8;font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;color:#1a2027;\">",
+                "  <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"padding:32px 0;\"><tr><td align=\"center\">",
+                "    <table role=\"presentation\" width=\"520\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#ffffff;border-radius:10px;box-shadow:0 2px 8px rgba(26,32,39,0.08);\">",
+                "      <tr><td style=\"background:#111827;padding:18px 26px;\"><span style=\"color:#fff;font-weight:700;\">Invoice</span></td></tr>",
+                "      <tr><td style=\"padding:26px 30px;\">",
+                "        <div style=\"font-size:12px;color:#6b7280;text-transform:uppercase;\">From</div>",
+                "        <div style=\"font-size:18px;font-weight:700;\">{{ sender_name | escape }}</div>",
+                "        <div style=\"font-size:13px;color:#6b7280;\">{{ sender_address | escape }}</div>",
+                "        {% if amount %}",
+                "        <div style=\"margin-top:20px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:14px 18px;\">",
+                "          <span style=\"color:#6b7280;\">Amount due:</span>",
+                "          <span style=\"font-size:22px;font-weight:800;float:right;\">{{ amount | escape }} ZEC</span>",
+                "        </div>",
+                "        {% endif %}",
+                "        <div style=\"margin-top:18px;font-size:12px;color:#6b7280;text-transform:uppercase;\">Invoice</div>",
+                "        <pre style=\"margin:6px 0 0;padding:12px 14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;white-space:pre-wrap;\">{{ invoice | escape }}</pre>",
+                "        <div style=\"margin-top:18px;font-size:12px;color:#9ca3af;\">Received {{ received_at }}</div>",
+                "      </td></tr>",
+                "    </table>",
+                "  </td></tr></table>",
+                "</body></html>",
             ]
             .join("\n"),
         }
@@ -121,11 +139,28 @@ mod tests {
         });
         let (subject, body) = render(&spec, &data);
         assert_eq!(subject, "Invoice from Alice Smith");
-        assert!(body.contains("From:     Alice Smith"));
-        assert!(body.contains("Address:  t1abc"));
-        assert!(body.contains("Amount:   1.5 ZEC"));
-        assert!(body.contains("Received: 2026-08-16"));
-        assert!(body.contains("line one\nline two"));
+        assert!(body.contains("<!DOCTYPE html>"), "{body}");
+        assert!(body.contains("Alice Smith"), "{body}");
+        assert!(body.contains("t1abc"), "{body}");
+        assert!(body.contains("1.5 ZEC"), "{body}");
+        assert!(body.contains("line one\nline two"), "{body}");
+        assert!(body.contains("Received 2026-08-16"), "{body}");
+    }
+
+    #[test]
+    fn default_invoice_omits_empty_amount() {
+        let spec = TemplateSpec::default_invoice();
+        let data = json!({
+            "sender_name": "bob@example.org",
+            "sender_address": "bob@example.org",
+            "amount": "",
+            "invoice": "invoice text",
+            "received_at": "2026-08-16"
+        });
+        let (_, body) = render(&spec, &data);
+        assert!(body.contains("invoice text"), "{body}");
+        assert!(!body.contains("Amount due"), "no amount row: {body}");
+        assert!(!body.contains("ZEC"), "no empty amount: {body}");
     }
 
     #[test]
