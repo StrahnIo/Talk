@@ -4,8 +4,10 @@ use crate::sink::StoreDeliverySink;
 use ed25519_dalek::SigningKey;
 use std::path::PathBuf;
 use std::sync::Arc;
-use talk_core::template::{TeraEngine, TemplateEngine, TemplateSpec};
-use talk_mailstore::{MessageFlags, NewMessage, NewTransaction, SqliteMailStore, TxDirection, TxState, hash_password};
+use talk_core::template::{TemplateEngine, TemplateSpec, TeraEngine};
+use talk_mailstore::{
+    MessageFlags, NewMessage, NewTransaction, SqliteMailStore, TxDirection, TxState, hash_password,
+};
 use talk_protocol::attestation::{
     Attestation, AttestationMode, RegistrationAttestation, mint_pair,
 };
@@ -195,7 +197,10 @@ impl SecureMailboxService {
             sender: recipient_mailbox.to_string(),
             trust_state: "unverified".to_string(),
         };
-        if let Ok(meta) = self.store.append_message_to(user.id, talk_mailstore::SENT, msg) {
+        if let Ok(meta) = self
+            .store
+            .append_message_to(user.id, talk_mailstore::SENT, msg)
+        {
             let _ = self.store.tx_link_message(tx.id, meta.id);
         }
     }
@@ -222,7 +227,14 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
         let receiver_pub = match self.resolver.resolving_key(receiver_domain) {
             Ok(k) => k,
             Err(e) => {
-                self.record_outbound_tx(sender_username, recipient_mailbox, message_id, payload, body, TxState::Failed);
+                self.record_outbound_tx(
+                    sender_username,
+                    recipient_mailbox,
+                    message_id,
+                    payload,
+                    body,
+                    TxState::Failed,
+                );
                 return SendResult::Error(format!("cannot resolve domain key: {e}"));
             }
         };
@@ -236,7 +248,14 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
                     override_ep.clone()
                 }
                 None => {
-                    self.record_outbound_tx(sender_username, recipient_mailbox, message_id, payload, body, TxState::Failed);
+                    self.record_outbound_tx(
+                        sender_username,
+                        recipient_mailbox,
+                        message_id,
+                        payload,
+                        body,
+                        TxState::Failed,
+                    );
                     return SendResult::Error(format!("cannot resolve endpoint: {e}"));
                 }
             },
@@ -253,7 +272,14 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
         {
             Ok(c) => c,
             Err(e) => {
-                self.record_outbound_tx(sender_username, recipient_mailbox, message_id, payload, body, TxState::Retrying);
+                self.record_outbound_tx(
+                    sender_username,
+                    recipient_mailbox,
+                    message_id,
+                    payload,
+                    body,
+                    TxState::Retrying,
+                );
                 return SendResult::Error(format!("connect: {e}"));
             }
         };
@@ -274,10 +300,24 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
             } else {
                 TxState::Failed
             };
-            self.record_outbound_tx(sender_username, recipient_mailbox, message_id, payload, body, state);
+            self.record_outbound_tx(
+                sender_username,
+                recipient_mailbox,
+                message_id,
+                payload,
+                body,
+                state,
+            );
             return SendResult::Error(format!("deliver: {e}"));
         }
-        self.record_outbound_tx(sender_username, recipient_mailbox, message_id, payload, body, TxState::Sent);
+        self.record_outbound_tx(
+            sender_username,
+            recipient_mailbox,
+            message_id,
+            payload,
+            body,
+            TxState::Sent,
+        );
         SendResult::Ok(format!("delivered {message_id} to {recipient_mailbox}"))
     }
 
@@ -698,12 +738,17 @@ mod tests {
         assert_eq!(msgs.len(), 1, "delivered message present");
 
         // The sender's store records an outbound transaction + a Sent copy.
-        let out = sender_store.tx_list(Some(TxDirection::Out), None).expect("out list");
+        let out = sender_store
+            .tx_list(Some(TxDirection::Out), None)
+            .expect("out list");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].state, TxState::Sent);
         assert_eq!(out[0].recipient_mailbox, "bob@receiver.example.org");
         assert_eq!(out[0].outbound_body.as_deref(), Some(&b"opaque"[..]));
-        let alice = sender_store.get_user("alice").expect("get").expect("exists");
+        let alice = sender_store
+            .get_user("alice")
+            .expect("get")
+            .expect("exists");
         let sent = sender_store
             .list_messages_in(alice.id, talk_mailstore::SENT)
             .expect("sent list");

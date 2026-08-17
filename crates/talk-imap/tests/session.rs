@@ -762,7 +762,11 @@ fn select_sent_and_fetch_per_mailbox() {
         .append_message_to(
             alice.id,
             talk_mailstore::SENT,
-            NewMessage::invoice("sent-1".to_string(), "Sent invoice".to_string(), b"sent-body".to_vec()),
+            NewMessage::invoice(
+                "sent-1".to_string(),
+                "Sent invoice".to_string(),
+                b"sent-body".to_vec(),
+            ),
         )
         .expect("append sent");
 
@@ -800,7 +804,11 @@ fn select_unknown_mailbox_no() {
     s.handle(&parse_cmd("A1 LOGIN alice secret"));
     let out = s.handle(&parse_cmd("A2 SELECT Nope"));
     assert!(out.contains("A2 NO Mailbox does not exist"), "{out}");
-    assert_eq!(s.state, State::Authenticated, "selection failed stays authenticated");
+    assert_eq!(
+        s.state,
+        State::Authenticated,
+        "selection failed stays authenticated"
+    );
 }
 
 #[test]
@@ -808,7 +816,10 @@ fn header_includes_tx_status_when_linked() {
     let (_dir, store, _) = setup();
     let alice = store.get_user("alice").expect("get").expect("exists");
     let meta = store
-        .append_message(alice.id, NewMessage::invoice("txm1", "New sealed invoice", b"b".to_vec()))
+        .append_message(
+            alice.id,
+            NewMessage::invoice("txm1", "New sealed invoice", b"b".to_vec()),
+        )
         .expect("append");
     store
         .tx_create(talk_mailstore::NewTransaction {
@@ -820,6 +831,7 @@ fn header_includes_tx_status_when_linked() {
             binding: None,
             message_id: "txm1".to_string(),
             outbound_body: None,
+            payload: "sealed".to_string(),
         })
         .expect("tx");
     let tx = store

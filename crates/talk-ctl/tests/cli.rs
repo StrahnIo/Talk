@@ -846,7 +846,10 @@ fn tx_ledger_lifecycle() {
     // Filters.
     let out = run(&[&cfg_flag(&s.cfg), "tx", "list", "--dir", "out"]);
     ok(&out, "tx list out");
-    assert!(!stdout(&out).contains("tx-1"), "out filter excludes inbound");
+    assert!(
+        !stdout(&out).contains("tx-1"),
+        "out filter excludes inbound"
+    );
 
     let out = run(&[&cfg_flag(&s.cfg), "tx", "list", "--state", "spent"]);
     ok(&out, "tx list spent");

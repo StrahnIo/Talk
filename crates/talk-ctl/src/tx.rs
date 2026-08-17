@@ -1,7 +1,7 @@
 //! `talkctl tx` — the transaction ledger.
 
-use crate::store::Ctx;
 use crate::CtlError;
+use crate::store::Ctx;
 use clap::Subcommand;
 use talk_mailstore::{Transaction, TxDirection, TxState};
 
@@ -60,9 +60,10 @@ pub fn run(config_path: Option<&std::path::Path>, action: TxAction) -> Result<()
 
 fn list(ctx: &Ctx, dir: Option<&str>, state: Option<&str>) -> Result<(), CtlError> {
     let direction = match dir {
-        Some(d) => Some(TxDirection::parse(d).ok_or_else(|| {
-            CtlError::msg(format!("invalid direction: {d} (use in|out)"))
-        })?),
+        Some(d) => Some(
+            TxDirection::parse(d)
+                .ok_or_else(|| CtlError::msg(format!("invalid direction: {d} (use in|out)")))?,
+        ),
         None => None,
     };
     let state = match state {
@@ -96,15 +97,23 @@ fn show(ctx: &Ctx, id: i64) -> Result<(), CtlError> {
     println!("sender          {}", t.sender_mailbox);
     println!("recipient       {}", t.recipient_mailbox);
     println!("amount          {}", t.amount);
-    println!("binding         {}", t.binding.as_deref().unwrap_or("(none)"));
+    println!(
+        "binding         {}",
+        t.binding.as_deref().unwrap_or("(none)")
+    );
     println!("message_id      {}", t.message_id);
     println!(
         "message_row     {}",
-        t.message_row_id.map(|r| r.to_string()).unwrap_or_else(|| "(none)".into())
+        t.message_row_id
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "(none)".into())
     );
     println!(
         "outbound_body   {}",
-        t.outbound_body.as_ref().map(|b| format!("{} bytes", b.len())).unwrap_or_else(|| "(none)".into())
+        t.outbound_body
+            .as_ref()
+            .map(|b| format!("{} bytes", b.len()))
+            .unwrap_or_else(|| "(none)".into())
     );
     println!("payload         {}", t.payload);
     println!("created_at      {}", t.created_at);
@@ -134,7 +143,12 @@ fn retry(ctx: &Ctx, id: i64) -> Result<(), CtlError> {
         .outbound_body
         .clone()
         .ok_or_else(|| CtlError::msg("no outbound body persisted for this transaction"))?;
-    let sender = tx.sender_mailbox.split('@').next().unwrap_or("").to_string();
+    let sender = tx
+        .sender_mailbox
+        .split('@')
+        .next()
+        .unwrap_or("")
+        .to_string();
     let payload = match tx.payload.as_str() {
         "plaintext" => talk_protocol::envelope::Payload::Plaintext,
         _ => talk_protocol::envelope::Payload::Sealed,

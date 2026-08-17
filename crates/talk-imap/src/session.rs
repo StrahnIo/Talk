@@ -44,7 +44,10 @@ pub const MAILBOXES: [&str; 2] = [talk_mailstore::INBOX, talk_mailstore::SENT];
 
 /// Resolve a mailbox argument to its canonical name, or `None`.
 pub fn canonical_mailbox(name: &str) -> Option<&'static str> {
-    MAILBOXES.iter().copied().find(|m| m.eq_ignore_ascii_case(name))
+    MAILBOXES
+        .iter()
+        .copied()
+        .find(|m| m.eq_ignore_ascii_case(name))
 }
 
 impl Session {
@@ -237,7 +240,10 @@ impl Session {
         out.push_str(&response::tagged(
             tag,
             Status::Ok,
-            &format!("[{mode}] {} completed", if read_only { "EXAMINE" } else { "SELECT" }),
+            &format!(
+                "[{mode}] {} completed",
+                if read_only { "EXAMINE" } else { "SELECT" }
+            ),
         ));
         self.selected_mailbox = mailbox.to_string();
         self.state = State::Selected;
@@ -323,7 +329,10 @@ impl Session {
             }
             _ => return response::tagged(tag, Status::Bad, "FETCH requires a sequence set"),
         };
-        let messages = match self.store.list_messages_in(self.user_id, &self.selected_mailbox) {
+        let messages = match self
+            .store
+            .list_messages_in(self.user_id, &self.selected_mailbox)
+        {
             Ok(m) => m,
             Err(e) => return self.store_err(tag, e),
         };
@@ -341,13 +350,14 @@ impl Session {
                 continue;
             }
             let body = if needs_body {
-                let msg = match self
-                    .store
-                    .fetch_message_in(self.user_id, &self.selected_mailbox, meta.id)
-                {
-                    Ok(m) => m,
-                    Err(e) => return self.store_err(tag, e),
-                };
+                let msg =
+                    match self
+                        .store
+                        .fetch_message_in(self.user_id, &self.selected_mailbox, meta.id)
+                    {
+                        Ok(m) => m,
+                        Err(e) => return self.store_err(tag, e),
+                    };
                 msg.body
             } else {
                 Vec::new()
@@ -403,7 +413,10 @@ impl Session {
             }
             _ => return response::tagged(tag, Status::Bad, "STORE requires arguments"),
         };
-        let messages = match self.store.list_messages_in(self.user_id, &self.selected_mailbox) {
+        let messages = match self
+            .store
+            .list_messages_in(self.user_id, &self.selected_mailbox)
+        {
             Ok(m) => m,
             Err(e) => return self.store_err(tag, e),
         };
@@ -417,9 +430,9 @@ impl Session {
             if !in_range(range, meta.uid, messages.len() as u32) {
                 continue;
             }
-            if let Err(e) = self
-                .store
-                .set_flags_in(self.user_id, &self.selected_mailbox, meta.id, mask, value)
+            if let Err(e) =
+                self.store
+                    .set_flags_in(self.user_id, &self.selected_mailbox, meta.id, mask, value)
             {
                 return self.store_err(tag, e);
             }
@@ -444,7 +457,10 @@ impl Session {
         if self.state != State::Selected {
             return response::tagged(tag, Status::Bad, "No mailbox selected");
         }
-        let messages = match self.store.list_messages_in(self.user_id, &self.selected_mailbox) {
+        let messages = match self
+            .store
+            .list_messages_in(self.user_id, &self.selected_mailbox)
+        {
             Ok(m) => m,
             Err(e) => return self.store_err(tag, e),
         };

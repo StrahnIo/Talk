@@ -266,7 +266,10 @@ pub(crate) fn record_outbound(
         sender: recipient_mailbox.to_string(),
         trust_state: "unverified".to_string(),
     };
-    if let Ok(meta) = ctx.store.append_message_to(user.id, talk_mailstore::SENT, msg) {
+    if let Ok(meta) = ctx
+        .store
+        .append_message_to(user.id, talk_mailstore::SENT, msg)
+    {
         let _ = ctx.store.tx_link_message(tx.id, meta.id);
     }
 }

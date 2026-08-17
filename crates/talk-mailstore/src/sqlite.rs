@@ -327,10 +327,7 @@ impl SqliteMailStore {
                  (SELECT id FROM mailboxes WHERE user_id = ?1)",
                 params![user.id],
             )?;
-            guard.execute(
-                "DELETE FROM mailboxes WHERE user_id = ?1",
-                params![user.id],
-            )?;
+            guard.execute("DELETE FROM mailboxes WHERE user_id = ?1", params![user.id])?;
             guard.execute("DELETE FROM users WHERE id = ?1", params![user.id])?;
             Ok(())
         })();
@@ -536,11 +533,7 @@ impl SqliteMailStore {
         Ok(key)
     }
 
-    fn mailbox_named(
-        &self,
-        user_id: i64,
-        name: &str,
-    ) -> Result<(i64, u32, i64), StoreError> {
+    fn mailbox_named(&self, user_id: i64, name: &str) -> Result<(i64, u32, i64), StoreError> {
         let guard = self.lock()?;
         guard
             .query_row(

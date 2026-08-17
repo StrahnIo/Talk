@@ -4,7 +4,9 @@ use ed25519_dalek::SigningKey;
 use std::path::Path;
 use std::sync::Arc;
 use talk_imap::server::MailboxEvent;
-use talk_mailstore::{MessageFlags, NewMessage, NewTransaction, SqliteMailStore, TxDirection, TxState};
+use talk_mailstore::{
+    MessageFlags, NewMessage, NewTransaction, SqliteMailStore, TxDirection, TxState,
+};
 use talk_protocol::{DeliveryOutcome, DeliverySink, Keyring, Payload, TrustState, UserDirectory};
 use tokio::sync::broadcast;
 use tracing::warn;

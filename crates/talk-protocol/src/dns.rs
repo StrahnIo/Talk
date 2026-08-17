@@ -270,8 +270,7 @@ impl EndpointResolver for DohEndpointResolver {
             // The designated counterparty skips SRV: resolve to a localhost
             // port from COUNTERPARTY_PORT_SMTP. Unset → NoSrv so callers fall
             // back to the send_endpoint override, else a clear error.
-            return counterparty_endpoint()
-                .ok_or_else(|| ResolverError::NoSrv(domain.to_string()));
+            return counterparty_endpoint().ok_or_else(|| ResolverError::NoSrv(domain.to_string()));
         }
         let name = format!("{SRV_SERVICE}.{domain}");
         let records = self.client.query(&name, "SRV")?;
@@ -387,10 +386,7 @@ mod tests {
         let vk = key.verifying_key();
         unsafe { std::env::set_var(COUNTERPARTY_DOMAINKEY_HEX, hex::encode(vk.to_bytes())) };
         let r = DohDomainKeyResolver::default();
-        assert_eq!(
-            r.resolving_key(COUNTERPARTY_DOMAIN).unwrap(),
-            vk
-        );
+        assert_eq!(r.resolving_key(COUNTERPARTY_DOMAIN).unwrap(), vk);
         unsafe { std::env::remove_var(COUNTERPARTY_DOMAINKEY_HEX) };
     }
 
