@@ -847,3 +847,65 @@ fn header_includes_tx_status_when_linked() {
     assert!(out.contains("X-Talk-Txn-Status: resolved"), "{out}");
     assert!(out.contains(&format!("X-Talk-Txn-Id: {}", tx.id)), "{out}");
 }
+
+#[test]
+fn header_has_from_to_reply_to_and_rfc2822_date() {
+    let (_dir, store, _) = setup();
+    // Give the message a sender so From is concrete, not "(unknown sender)".
+    let alice = store.get_user("alice").expect("get").expect("exists");
+    let mut msg = NewMessage::invoice("hdr-1", "New sealed invoice", b"b".to_vec());
+    msg.sender = "bob@example.org".to_string();
+    store.append_message(alice.id, msg).expect("append");
+
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 FETCH 2 (BODY.PEEK[HEADER])"));
+    assert!(out.contains("From: bob@example.org"), "{out}");
+    assert!(out.contains("To: alice@talk.local"), "{out}");
+    assert!(out.contains("Reply-To: bob@example.org"), "{out}");
+    // RFC 2822 Date includes the weekday.
+    assert!(out.contains("Date: "), "{out}");
+    assert!(out.contains(","), "weekday present: {out}");
+    assert!(out.contains(" +0000"), "{out}");
+}
+
+#[test]
+fn envelope_carries_from_and_to_addresses() {
+    let (_dir, store, _) = setup();
+    let alice = store.get_user("alice").expect("get").expect("exists");
+    let mut msg = NewMessage::invoice("env-1", "New sealed invoice", b"b".to_vec());
+    msg.sender = "bob@example.org".to_string();
+    store.append_message(alice.id, msg).expect("append");
+
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 FETCH 2 (ENVELOPE)"));
+    assert!(
+        out.contains("((\"bob\" NIL \"bob\" \"example.org\"))"),
+        "from address: {out}"
+    );
+    assert!(
+        out.contains("((\"alice\" NIL \"alice\" \"talk.local\"))"),
+        "to address: {out}"
+    );
+}
+
+#[test]
+fn sent_copy_identity_shows_local_sender() {
+    let (_dir, store, _) = setup();
+    let alice = store.get_user("alice").expect("get").expect("exists");
+    let mut msg = NewMessage::invoice("sent-1", "Sent invoice", b"b".to_vec());
+    msg.sender = "bob@example.org".to_string();
+    store
+        .append_message_to(alice.id, talk_mailstore::SENT, msg)
+        .expect("append");
+
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT Sent"));
+    let out = s.handle(&parse_cmd("A3 FETCH 1 (BODY.PEEK[HEADER])"));
+    assert!(out.contains("From: alice@talk.local"), "{out}");
+    assert!(out.contains("To: bob@example.org"), "{out}");
+}

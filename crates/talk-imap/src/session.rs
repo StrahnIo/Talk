@@ -362,10 +362,34 @@ impl Session {
             } else {
                 Vec::new()
             };
-            out.push_str(&fetch_response(meta, &req, &body));
+            out.push_str(&fetch_response(
+                meta,
+                &req,
+                &body,
+                &self.message_identity(meta),
+            ));
         }
         out.push_str(&response::tagged(tag, Status::Ok, "FETCH completed"));
         out
+    }
+
+    /// The From/To identity of a message. In INBOX, the sender is `meta.sender`
+    /// and the local user is the recipient; in Sent, the local user is the
+    /// sender and `meta.sender` holds the recipient mailbox.
+    fn message_identity(&self, meta: &talk_mailstore::MessageMeta) -> MessageIdentity {
+        let local = format!("{}@{}", self.username, self.domain);
+        let other = meta.sender.clone();
+        if self.selected_mailbox == talk_mailstore::SENT {
+            MessageIdentity {
+                from: local,
+                to: other,
+            }
+        } else {
+            MessageIdentity {
+                from: other,
+                to: local,
+            }
+        }
     }
 
     fn cmd_uid(&mut self, tag: &str, cmd: &ParsedCommand) -> String {
@@ -655,16 +679,32 @@ impl BodySection {
     }
 
     /// The literal bytes served for this section.
-    fn content(&self, meta: &talk_mailstore::MessageMeta, body: &[u8]) -> Vec<u8> {
+    fn content(
+        &self,
+        meta: &talk_mailstore::MessageMeta,
+        body: &[u8],
+        identity: &MessageIdentity,
+    ) -> Vec<u8> {
         match self {
             BodySection::None => Vec::new(),
             BodySection::Full | BodySection::Text | BodySection::Other(_) => body.to_vec(),
             BodySection::Mime => b"Content-Type: text/plain\r\n".to_vec(),
-            BodySection::Header => header_lines(meta, None),
-            BodySection::HeaderFields(fields) => header_lines(meta, Some((fields, false))),
-            BodySection::HeaderFieldsNot(fields) => header_lines(meta, Some((fields, true))),
+            BodySection::Header => header_lines(meta, None, identity),
+            BodySection::HeaderFields(fields) => {
+                header_lines(meta, Some((fields, false)), identity)
+            }
+            BodySection::HeaderFieldsNot(fields) => {
+                header_lines(meta, Some((fields, true)), identity)
+            }
         }
     }
+}
+
+/// The synthesized From/To identity of a message, derived from the selected
+/// mailbox and the authenticated local user.
+struct MessageIdentity {
+    from: String,
+    to: String,
 }
 
 /// A parsed FETCH request: which items and which body section (if any).
@@ -827,19 +867,34 @@ fn extract_field_list(s: &str) -> Option<&str> {
 /// Synthesize a minimal RFC 2822 header block from the stored metadata, so
 /// clients that fetch `BODY[HEADER]` (e.g. Thunderbird's folder sync) see a
 /// proper message. `filter` is `Some((fields, negate))` for `HEADER.FIELDS`.
-fn header_lines(meta: &talk_mailstore::MessageMeta, filter: Option<(&[String], bool)>) -> Vec<u8> {
-    let mut hdrs: Vec<(String, String)> = Vec::new();
-    hdrs.push((
-        "Content-Type".to_string(),
-        "text/html; charset=utf-8".to_string(),
-    ));
-    if !meta.sender.is_empty() {
-        hdrs.push(("From".to_string(), meta.sender.clone()));
-    }
+fn header_lines(
+    meta: &talk_mailstore::MessageMeta,
+    filter: Option<(&[String], bool)>,
+    identity: &MessageIdentity,
+) -> Vec<u8> {
+    let from = if identity.from.is_empty() {
+        "(unknown sender)".to_string()
+    } else {
+        identity.from.clone()
+    };
+    let to = if identity.to.is_empty() {
+        "(unknown recipient)".to_string()
+    } else {
+        identity.to.clone()
+    };
+    let mut hdrs: Vec<(String, String)> = vec![
+        (
+            "Content-Type".to_string(),
+            "text/html; charset=utf-8".to_string(),
+        ),
+        ("From".to_string(), from.clone()),
+        ("To".to_string(), to.clone()),
+        ("Reply-To".to_string(), from),
+    ];
     if !meta.subject.is_empty() {
         hdrs.push(("Subject".to_string(), meta.subject.clone()));
     }
-    hdrs.push(("Date".to_string(), format_internaldate(meta.internaldate)));
+    hdrs.push(("Date".to_string(), format_rfc2822(meta.internaldate)));
     hdrs.push(("Message-ID".to_string(), format!("<{}>", meta.message_id)));
     if let Some(state) = &meta.tx_state {
         hdrs.push(("X-Talk-Txn-Status".to_string(), state.clone()));
@@ -864,7 +919,12 @@ fn header_lines(meta: &talk_mailstore::MessageMeta, filter: Option<(&[String], b
     out.into_bytes()
 }
 
-fn fetch_response(meta: &talk_mailstore::MessageMeta, req: &FetchRequest, body: &[u8]) -> String {
+fn fetch_response(
+    meta: &talk_mailstore::MessageMeta,
+    req: &FetchRequest,
+    body: &[u8],
+    identity: &MessageIdentity,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
     if req.flags {
         parts.push(format!("FLAGS ({})", flags_display(meta.flags)));
@@ -883,7 +943,7 @@ fn fetch_response(meta: &talk_mailstore::MessageMeta, req: &FetchRequest, body: 
         ));
     }
     if req.envelope {
-        parts.push(format!("ENVELOPE ({})", envelope_response(meta)));
+        parts.push(format!("ENVELOPE ({})", envelope_response(meta, identity)));
     }
     if req.bodystructure {
         let lines = if body.is_empty() {
@@ -904,7 +964,7 @@ fn fetch_response(meta: &talk_mailstore::MessageMeta, req: &FetchRequest, body: 
     // The body literal is the LAST item in the parenthesized list: the closing
     // `)` comes after the literal data (imap_proto requirement).
     let label = req.body.label();
-    let content = req.body.content(meta, body);
+    let content = req.body.content(meta, body, identity);
     let mut out = String::new();
     out.push_str(&response::untagged(&format!(
         "{} FETCH ({} {label} {{{}}}",
@@ -937,16 +997,56 @@ fn format_internaldate(t: std::time::SystemTime) -> String {
     }
 }
 
-/// Build the IMAP `envelope` struct from the stored message fields.
-///
-/// We store subject + message-id; From/To/Date are synthesized from the
-/// internal date and the stored sender label (the mailbox is an
-/// opaque-invoice store).
-fn envelope_response(meta: &talk_mailstore::MessageMeta) -> String {
-    let date = format_internaldate(meta.internaldate);
+/// Format an internal date as an RFC 2822 date-time (weekday included) for the
+/// synthesized `Date:` header and ENVELOPE date.
+fn format_rfc2822(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or(std::time::Duration::ZERO)
+        .as_secs() as i64;
+    use time::macros::format_description;
+    let fmt = format_description!(
+        "[weekday repr:short], [day padding:zero] [month repr:short] [year] \
+         [hour padding:zero]:[minute padding:zero]:[second padding:zero] +0000"
+    );
+    let offset = time::UtcOffset::UTC;
+    match time::OffsetDateTime::from_unix_timestamp(secs) {
+        Ok(dt) => dt
+            .to_offset(offset)
+            .format(&fmt)
+            .unwrap_or_else(|_| "Mon, 01 Jan 1970 00:00:00 +0000".to_string()),
+        Err(_) => "Mon, 01 Jan 1970 00:00:00 +0000".to_string(),
+    }
+}
+
+/// Build an IMAP address group (a list of one address) from a mailbox or bare
+/// name. `user@domain` becomes `(("user" NIL "user" "domain"))`; a bare name
+/// becomes `(("Name" NIL NIL NIL))`; empty/unknown becomes `NIL`.
+fn address_group(s: &str) -> String {
+    if s.is_empty() || s == "(unknown sender)" || s == "(unknown recipient)" {
+        return "NIL".to_string();
+    }
+    if let Some((local, host)) = s.rsplit_once('@') {
+        format!(
+            "(({} NIL {} {}))",
+            response::quote(local),
+            response::quote(local),
+            response::quote(host)
+        )
+    } else {
+        format!("(({} NIL NIL NIL))", response::quote(s))
+    }
+}
+
+/// Build the IMAP `envelope` struct from the stored message fields and the
+/// synthesized From/To identity.
+fn envelope_response(meta: &talk_mailstore::MessageMeta, identity: &MessageIdentity) -> String {
+    let date = format_rfc2822(meta.internaldate);
     let subject = response::quote(&meta.subject);
     let message_id = response::quote(&meta.message_id);
-    format!("{date} {subject} NIL NIL NIL NIL NIL NIL NIL {message_id}")
+    let from = address_group(&identity.from);
+    let to = address_group(&identity.to);
+    format!("{date} {subject} {from} {from} {from} {to} NIL NIL NIL {message_id}")
 }
 
 /// Whether `username` is a member of the OS `zsmtp` group. Used by the
