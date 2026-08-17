@@ -566,6 +566,59 @@ fn uid_search_unseen() {
 }
 
 #[test]
+fn uid_fetch_lowercase_returns_flags_and_uid() {
+    // Thunderbird sends `uid fetch 1:* (FLAGS)` with a lowercase subcommand.
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 UID fetch 1:* (FLAGS)"));
+    assert!(
+        out.contains("* 1 FETCH (FLAGS () UID 1"),
+        "must not be an empty FETCH: {out}"
+    );
+    assert!(out.contains("A3 OK FETCH completed"));
+}
+
+#[test]
+fn uid_fetch_lowercase_sections() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 UID fetch 1 (BODY.PEEK[HEADER.FIELDS (SUBJECT)])"));
+    assert!(out.contains("BODY[HEADER.FIELDS (SUBJECT)] {"), "got: {out}");
+    assert!(out.contains("Subject: New sealed invoice"), "got: {out}");
+    assert!(out.contains("A3 OK FETCH completed"));
+}
+
+#[test]
+fn uid_store_lowercase() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 UID store 1 +FLAGS (\\Seen)"));
+    assert!(out.contains("1 FETCH (FLAGS (\\Seen))"), "got: {out}");
+    assert!(out.contains("A3 OK STORE completed"));
+    // The flag actually stuck.
+    let out = s.handle(&parse_cmd("A4 UID search UNSEEN"));
+    assert!(out.contains("SEARCH "), "got: {out}");
+    assert!(!out.contains("SEARCH 1"), "message should now be seen: {out}");
+}
+
+#[test]
+fn uid_search_lowercase() {
+    let (_dir, store, _) = setup();
+    let mut s = session_with(store);
+    s.handle(&parse_cmd("A1 LOGIN alice secret"));
+    s.handle(&parse_cmd("A2 SELECT INBOX"));
+    let out = s.handle(&parse_cmd("A3 UID search ALL"));
+    assert!(out.contains("SEARCH 1"), "got: {out}");
+    assert!(out.contains("A3 OK SEARCH completed"));
+}
+
+#[test]
 fn expunge_requires_selected() {
     let (_dir, store, _) = setup();
     let mut s = session_with(store);
