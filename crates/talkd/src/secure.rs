@@ -146,9 +146,14 @@ impl SecureMailboxService {
         sender_username: &str,
         recipient_mailbox: &str,
         message_id: &str,
+        payload: Payload,
         body: &[u8],
         state: TxState,
     ) {
+        let payload_str = match payload {
+            Payload::Sealed => "sealed",
+            Payload::Plaintext => "plaintext",
+        };
         let sender_mailbox = format!("{sender_username}@{}", self.sender_domain);
         let tx = match self
             .store
@@ -169,6 +174,7 @@ impl SecureMailboxService {
                 binding: None,
                 message_id: message_id.to_string(),
                 outbound_body: Some(body.to_vec()),
+                payload: payload_str.to_string(),
             }) {
                 Ok(t) => t,
                 Err(e) => {
@@ -216,7 +222,7 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
         let receiver_pub = match self.resolver.resolving_key(receiver_domain) {
             Ok(k) => k,
             Err(e) => {
-                self.record_outbound_tx(sender_username, recipient_mailbox, message_id, body, TxState::Failed);
+                self.record_outbound_tx(sender_username, recipient_mailbox, message_id, payload, body, TxState::Failed);
                 return SendResult::Error(format!("cannot resolve domain key: {e}"));
             }
         };
@@ -230,7 +236,7 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
                     override_ep.clone()
                 }
                 None => {
-                    self.record_outbound_tx(sender_username, recipient_mailbox, message_id, body, TxState::Failed);
+                    self.record_outbound_tx(sender_username, recipient_mailbox, message_id, payload, body, TxState::Failed);
                     return SendResult::Error(format!("cannot resolve endpoint: {e}"));
                 }
             },
@@ -247,7 +253,7 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
         {
             Ok(c) => c,
             Err(e) => {
-                self.record_outbound_tx(sender_username, recipient_mailbox, message_id, body, TxState::Retrying);
+                self.record_outbound_tx(sender_username, recipient_mailbox, message_id, payload, body, TxState::Retrying);
                 return SendResult::Error(format!("connect: {e}"));
             }
         };
@@ -268,10 +274,10 @@ impl AsyncSecureMailboxHandler for SecureMailboxService {
             } else {
                 TxState::Failed
             };
-            self.record_outbound_tx(sender_username, recipient_mailbox, message_id, body, state);
+            self.record_outbound_tx(sender_username, recipient_mailbox, message_id, payload, body, state);
             return SendResult::Error(format!("deliver: {e}"));
         }
-        self.record_outbound_tx(sender_username, recipient_mailbox, message_id, body, TxState::Sent);
+        self.record_outbound_tx(sender_username, recipient_mailbox, message_id, payload, body, TxState::Sent);
         SendResult::Ok(format!("delivered {message_id} to {recipient_mailbox}"))
     }
 

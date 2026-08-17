@@ -166,6 +166,7 @@ impl StoreDeliverySink {
             binding: None,
             message_id: message_id.to_string(),
             outbound_body: None,
+            payload: "sealed".to_string(),
         });
         match result {
             Ok(tx) => {

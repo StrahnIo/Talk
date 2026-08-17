@@ -119,6 +119,7 @@ impl SqliteMailStore {
                 message_id       TEXT NOT NULL,
                 message_row_id   INTEGER,
                 outbound_body    BLOB,
+                payload          TEXT NOT NULL DEFAULT 'sealed',
                 created_at       INTEGER NOT NULL,
                 updated_at       INTEGER NOT NULL,
                 UNIQUE (direction, message_id)
@@ -356,8 +357,8 @@ impl SqliteMailStore {
         guard.execute(
             "INSERT INTO transactions
              (direction, state, sender_mailbox, recipient_mailbox, amount, binding,
-              message_id, outbound_body, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+              message_id, outbound_body, payload, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 t.direction.as_str(),
                 t.state.as_str(),
@@ -367,6 +368,7 @@ impl SqliteMailStore {
                 t.binding.as_deref(),
                 &t.message_id,
                 t.outbound_body.as_deref(),
+                &t.payload,
                 now,
                 now,
             ],
@@ -382,6 +384,7 @@ impl SqliteMailStore {
             message_id: t.message_id,
             message_row_id: None,
             outbound_body: t.outbound_body,
+            payload: t.payload,
             created_at: now,
             updated_at: now,
         })
@@ -403,7 +406,7 @@ impl SqliteMailStore {
         guard
             .query_row(
                 "SELECT id, direction, state, sender_mailbox, recipient_mailbox, amount,
-                        binding, message_id, message_row_id, outbound_body, created_at, updated_at
+                        binding, message_id, message_row_id, outbound_body, payload, created_at, updated_at
                  FROM transactions WHERE id = ?1",
                 params![id],
                 row_to_tx,
@@ -422,7 +425,7 @@ impl SqliteMailStore {
         guard
             .query_row(
                 "SELECT id, direction, state, sender_mailbox, recipient_mailbox, amount,
-                        binding, message_id, message_row_id, outbound_body, created_at, updated_at
+                        binding, message_id, message_row_id, outbound_body, payload, created_at, updated_at
                  FROM transactions WHERE direction = ?1 AND message_id = ?2",
                 params![direction.as_str(), message_id],
                 row_to_tx,
@@ -440,7 +443,7 @@ impl SqliteMailStore {
         let guard = self.lock()?;
         let mut sql = String::from(
             "SELECT id, direction, state, sender_mailbox, recipient_mailbox, amount,
-                    binding, message_id, message_row_id, outbound_body, created_at, updated_at
+                    binding, message_id, message_row_id, outbound_body, payload, created_at, updated_at
              FROM transactions",
         );
         let mut conds: Vec<String> = Vec::new();
@@ -472,6 +475,19 @@ impl SqliteMailStore {
         let n = guard.execute(
             "UPDATE transactions SET state = ?1, updated_at = ?2 WHERE id = ?3",
             params![state.as_str(), now_secs(), id],
+        )?;
+        if n == 0 {
+            return Err(StoreError::UserNotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Set (or clear) a transaction's on-chain binding.
+    pub fn tx_set_binding(&self, id: i64, binding: Option<&str>) -> Result<(), StoreError> {
+        let guard = self.lock()?;
+        let n = guard.execute(
+            "UPDATE transactions SET binding = ?1, updated_at = ?2 WHERE id = ?3",
+            params![binding, now_secs(), id],
         )?;
         if n == 0 {
             return Err(StoreError::UserNotFound(id.to_string()));
@@ -921,7 +937,8 @@ fn row_to_tx(row: &rusqlite::Row<'_>) -> rusqlite::Result<Transaction> {
         message_id: row.get(7)?,
         message_row_id: row.get(8)?,
         outbound_body: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        payload: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
     })
 }

@@ -782,3 +782,90 @@ fn emulate_fails_when_daemon_down() {
     ]);
     err_contains(&out, "daemon not running", "emulate with daemon down");
 }
+
+#[test]
+fn tx_ledger_lifecycle() {
+    use talk_mailstore::{NewMessage, NewTransaction, SqliteMailStore, TxDirection, TxState};
+
+    let s = setup();
+    let store = SqliteMailStore::open(s.data.join("mailbox.db")).expect("open");
+    let hash = talk_mailstore::hash_password("pw").expect("hash");
+    let user_id = store
+        .create_user("alice", &hash, &[0u8; 32])
+        .expect("user")
+        .id;
+    let meta = store
+        .append_message(user_id, NewMessage::invoice("tx-1", "s", b"b".to_vec()))
+        .expect("append");
+    let tx = store
+        .tx_create(NewTransaction {
+            direction: TxDirection::In,
+            state: TxState::Opaque,
+            sender_mailbox: "bob@example.org".to_string(),
+            recipient_mailbox: "alice@talk.local".to_string(),
+            amount: "1.5".to_string(),
+            binding: None,
+            message_id: "tx-1".to_string(),
+            outbound_body: None,
+            payload: "sealed".to_string(),
+        })
+        .expect("tx");
+    store.tx_link_message(tx.id, meta.id).expect("link");
+
+    let out = run(&[&cfg_flag(&s.cfg), "tx", "list"]);
+    ok(&out, "tx list");
+    let text = stdout(&out);
+    assert!(text.contains("opaque"), "{text}");
+    assert!(text.contains("1.5"), "{text}");
+
+    let out = run(&[&cfg_flag(&s.cfg), "tx", "show", &tx.id.to_string()]);
+    ok(&out, "tx show");
+    assert!(stdout(&out).contains("state           opaque"));
+
+    // Resolve with a binding.
+    let out = run(&[
+        &cfg_flag(&s.cfg),
+        "tx",
+        "resolve",
+        &tx.id.to_string(),
+        "--binding",
+        "aabbccdd",
+    ]);
+    ok(&out, "tx resolve");
+    let out = run(&[&cfg_flag(&s.cfg), "tx", "show", &tx.id.to_string()]);
+    let text = stdout(&out);
+    assert!(text.contains("state           resolved"), "{text}");
+    assert!(text.contains("binding         aabbccdd"), "{text}");
+
+    // Mark spent.
+    let out = run(&[&cfg_flag(&s.cfg), "tx", "mark-spent", &tx.id.to_string()]);
+    ok(&out, "tx mark-spent");
+    let out = run(&[&cfg_flag(&s.cfg), "tx", "show", &tx.id.to_string()]);
+    assert!(stdout(&out).contains("state           spent"));
+
+    // Filters.
+    let out = run(&[&cfg_flag(&s.cfg), "tx", "list", "--dir", "out"]);
+    ok(&out, "tx list out");
+    assert!(!stdout(&out).contains("tx-1"), "out filter excludes inbound");
+
+    let out = run(&[&cfg_flag(&s.cfg), "tx", "list", "--state", "spent"]);
+    ok(&out, "tx list spent");
+    assert!(stdout(&out).contains("tx-1"));
+
+    // Resolve on an outbound tx must be rejected.
+    let out_tx = store
+        .tx_create(NewTransaction {
+            direction: TxDirection::Out,
+            state: TxState::Sent,
+            sender_mailbox: "alice@talk.local".to_string(),
+            recipient_mailbox: "bob@example.org".to_string(),
+            amount: String::new(),
+            binding: None,
+            message_id: "out-1".to_string(),
+            outbound_body: Some(b"body".to_vec()),
+            payload: "sealed".to_string(),
+        })
+        .expect("out tx");
+    let out = run(&[&cfg_flag(&s.cfg), "tx", "resolve", &out_tx.id.to_string()]);
+    err_contains(&out, "only inbound", "resolve on outbound rejected");
+}

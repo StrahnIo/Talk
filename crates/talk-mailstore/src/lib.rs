@@ -120,8 +120,9 @@ pub struct NewTransaction {
     pub message_id: String,
     /// Outbound only: the persisted invoice body (retry / Sent view).
     pub outbound_body: Option<Vec<u8>>,
+    /// Payload type: "sealed" | "plaintext".
+    pub payload: String,
 }
-
 /// A ledger transaction: the email-analogous record of a send or receive.
 #[derive(Debug, Clone)]
 pub struct Transaction {
@@ -139,6 +140,8 @@ pub struct Transaction {
     pub message_row_id: Option<i64>,
     /// Outbound only: the persisted invoice body (enables retry / Sent view).
     pub outbound_body: Option<Vec<u8>>,
+    /// The payload type the body was delivered as: "sealed" | "plaintext".
+    pub payload: String,
     pub created_at: i64,
     pub updated_at: i64,
 }

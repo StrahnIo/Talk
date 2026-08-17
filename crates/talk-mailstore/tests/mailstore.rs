@@ -565,6 +565,7 @@ fn transactions_ledger_crud() {
             binding: None,
             message_id: "msg-tx-1".to_string(),
             outbound_body: None,
+            payload: "sealed".to_string(),
         })
         .expect("create");
 
@@ -598,6 +599,7 @@ fn transactions_ledger_crud() {
             binding: None,
             message_id: "msg-tx-2".to_string(),
             outbound_body: Some(b"invoice body".to_vec()),
+            payload: "sealed".to_string(),
         })
         .expect("create out");
     assert_eq!(out.outbound_body.as_deref(), Some(&b"invoice body"[..]));
@@ -633,6 +635,7 @@ fn message_links_to_transaction_state() {
             binding: None,
             message_id: "m1".to_string(),
             outbound_body: None,
+            payload: "sealed".to_string(),
         })
         .expect("tx");
     store.tx_link_message(tx.id, meta.id).expect("link");

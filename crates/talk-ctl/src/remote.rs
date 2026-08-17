@@ -147,6 +147,21 @@ async fn direct_send(
     payload: Payload,
     body: Vec<u8>,
 ) -> Result<(), CtlError> {
+    let _state = deliver_invoice(ctx, sender, recipient, &message_id, payload, body).await?;
+    println!("delivered to {recipient}");
+    Ok(())
+}
+
+/// Resolve, deliver, and record an outbound transaction. Returns the resulting
+/// ledger state. Shared by `send` and `tx retry`.
+pub(crate) async fn deliver_invoice(
+    ctx: &Ctx,
+    sender: &str,
+    recipient: &str,
+    message_id: &str,
+    payload: Payload,
+    body: Vec<u8>,
+) -> Result<talk_mailstore::TxState, CtlError> {
     let receiver_domain = recipient
         .split('@')
         .nth(1)
@@ -175,7 +190,7 @@ async fn direct_send(
         sender_username: sender.to_string(),
         recipient_user,
         receiver_pub,
-        message_id,
+        message_id: message_id.to_string(),
         payload,
         body,
     };
@@ -190,25 +205,30 @@ async fn direct_send(
         sender,
         recipient,
         &invoice.message_id,
+        &invoice.payload,
         &invoice.body,
         state,
     );
     result.map_err(|e| CtlError::msg(format!("deliver: {e}")))?;
-    println!("delivered to {recipient}");
-    Ok(())
+    Ok(state)
 }
 
 /// Record an outbound ledger transaction (and a Sent-mailbox copy).
 /// Idempotent per (direction, message_id): a retry transitions the row.
-fn record_outbound(
+pub(crate) fn record_outbound(
     ctx: &Ctx,
     sender_username: &str,
     recipient_mailbox: &str,
     message_id: &str,
+    payload: &Payload,
     body: &[u8],
     state: talk_mailstore::TxState,
 ) {
     use talk_mailstore::{MessageFlags, NewMessage, NewTransaction, TxDirection};
+    let payload_str = match payload {
+        Payload::Sealed => "sealed",
+        Payload::Plaintext => "plaintext",
+    };
     let sender_mailbox = format!("{sender_username}@{}", ctx.cfg.general.domain);
     let tx = match ctx
         .store
@@ -229,6 +249,7 @@ fn record_outbound(
             binding: None,
             message_id: message_id.to_string(),
             outbound_body: Some(body.to_vec()),
+            payload: payload_str.to_string(),
         }) {
             Ok(t) => t,
             Err(_) => return,
