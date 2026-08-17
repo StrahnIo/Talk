@@ -124,6 +124,31 @@ async fn fetch_sections_and_size_without_body() {
 }
 
 #[tokio::test]
+async fn uid_fetch_flags_returns_uid() {
+    // async-imap sends the UID subcommand lowercase (`uid fetch 1:* (FLAGS)`)
+    // — the exact Thunderbird folder-sync call that used to come back empty.
+    let (port, _store) = boot_server().await;
+    let mut session = login_session(port).await;
+    session.select("INBOX").await.expect("select");
+
+    let fetches: Vec<Result<async_imap::types::Fetch, _>> = session
+        .uid_fetch("1:*", "(FLAGS)")
+        .await
+        .expect("uid fetch")
+        .collect()
+        .await;
+    assert_eq!(fetches.len(), 1, "one message");
+    let fetch = fetches.into_iter().next().unwrap().expect("fetch ok");
+    assert_eq!(
+        fetch.uid,
+        Some(1),
+        "UID must be present in a UID FETCH response"
+    );
+
+    session.logout().await.expect("logout");
+}
+
+#[tokio::test]
 async fn store_and_search_flow() {
     let (port, _store) = boot_server().await;
     let mut session = login_session(port).await;

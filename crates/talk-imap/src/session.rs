@@ -286,8 +286,10 @@ impl Session {
         if self.state != State::Selected {
             return response::tagged(tag, Status::Bad, "No mailbox selected");
         }
-        // UID FETCH arrives as cmd.name == "UID" with args ["FETCH", ...].
-        let (range, items) = match (cmd.args.first().map(String::as_str), cmd.name.as_str()) {
+        // UID FETCH arrives as cmd.name == "UID" with args ["FETCH", ...] (the
+        // subcommand may be any case — e.g. Thunderbird sends `uid fetch`).
+        let sub = cmd.args.first().map(|s| s.to_ascii_uppercase());
+        let (range, items) = match (sub.as_deref(), cmd.name.as_str()) {
             (Some("FETCH"), "UID") => {
                 if cmd.args.len() < 3 {
                     return response::tagged(tag, Status::Bad, "UID FETCH requires arguments");
@@ -311,7 +313,12 @@ impl Session {
             Ok(m) => m,
             Err(e) => return self.store_err(tag, e),
         };
-        let req = parse_fetch_items(&items);
+        let mut req = parse_fetch_items(&items);
+        // RFC 3501 §6.4.8: the UID is always returned in a UID FETCH response,
+        // regardless of the requested data items.
+        if cmd.name == "UID" {
+            req.uid = true;
+        }
         // Only sections that return the stored body need a store read.
         let needs_body = req.body.needs_stored_body();
         let mut out = String::new();
@@ -353,31 +360,32 @@ impl Session {
         if self.state != State::Selected {
             return response::tagged(tag, Status::Bad, "No mailbox selected");
         }
-        // UID STORE arrives as cmd.name == "UID" with args ["STORE", ...].
-        let (range, mode, flagspec) =
-            match (cmd.args.first().map(String::as_str), cmd.name.as_str()) {
-                (Some("STORE"), "UID") => {
-                    if cmd.args.len() < 4 {
-                        return response::tagged(tag, Status::Bad, "UID STORE requires arguments");
-                    }
-                    (
-                        cmd.args[1].as_str(),
-                        cmd.args[2].as_str(),
-                        cmd.args[3].as_str(),
-                    )
+        // UID STORE arrives as cmd.name == "UID" with args ["STORE", ...] (the
+        // subcommand may be any case).
+        let sub = cmd.args.first().map(|s| s.to_ascii_uppercase());
+        let (range, mode, flagspec) = match (sub.as_deref(), cmd.name.as_str()) {
+            (Some("STORE"), "UID") => {
+                if cmd.args.len() < 4 {
+                    return response::tagged(tag, Status::Bad, "UID STORE requires arguments");
                 }
-                (_, "STORE") | (_, "UID") => {
-                    if cmd.args.len() < 3 {
-                        return response::tagged(tag, Status::Bad, "STORE requires arguments");
-                    }
-                    (
-                        cmd.args[0].as_str(),
-                        cmd.args[1].as_str(),
-                        cmd.args[2].as_str(),
-                    )
+                (
+                    cmd.args[1].as_str(),
+                    cmd.args[2].as_str(),
+                    cmd.args[3].as_str(),
+                )
+            }
+            (_, "STORE") | (_, "UID") => {
+                if cmd.args.len() < 3 {
+                    return response::tagged(tag, Status::Bad, "STORE requires arguments");
                 }
-                _ => return response::tagged(tag, Status::Bad, "STORE requires arguments"),
-            };
+                (
+                    cmd.args[0].as_str(),
+                    cmd.args[1].as_str(),
+                    cmd.args[2].as_str(),
+                )
+            }
+            _ => return response::tagged(tag, Status::Bad, "STORE requires arguments"),
+        };
         let messages = match self.store.list_messages(self.user_id) {
             Ok(m) => m,
             Err(e) => return self.store_err(tag, e),
@@ -421,8 +429,13 @@ impl Session {
             Err(e) => return self.store_err(tag, e),
         };
         let args: Vec<&String> = if cmd.name == "UID" {
-            // UID SEARCH arrives as ["SEARCH", ...].
-            if cmd.args.first().map(String::as_str) == Some("SEARCH") {
+            // UID SEARCH arrives as ["SEARCH", ...] (any case).
+            if cmd
+                .args
+                .first()
+                .map(|s| s.eq_ignore_ascii_case("SEARCH"))
+                .unwrap_or(false)
+            {
                 cmd.args.iter().skip(1).collect()
             } else {
                 cmd.args.iter().collect()
