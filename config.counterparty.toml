@@ -1,0 +1,70 @@
+# Talk daemon configuration — local counterparty (example.com)
+#
+# The designated counterparty daemon: its domain is example.com, which the
+# sender side resolves directly via COUNTERPARTY_PORT_SMTP (no DNS). Used for
+# two-daemon local development alongside the main config.toml.
+#
+# Run with: talkd --config config.counterparty.toml
+# (with UNSAFE_NO_TLS=1 UNSAFE_IMAP_PORT=1145 for a plaintext IMAP listener,
+# or just use IMAPS on 1145 with the self-signed cert below.)
+
+[general]
+# Root directory for counterparty daemon data.
+data_dir = "/Users/leviackerman/Library/Application Support/talk-counterparty"
+
+# The counterparty's domain — example.com skips DNS SRV and resolves to the
+# localhost port in COUNTERPARTY_PORT_SMTP.
+domain = "example.com"
+
+# Log verbosity: "trace" | "debug" | "info" | "warn" | "error".
+log_level = "info"
+
+[network]
+# The lightwalletd indexer endpoint (host:port) the daemon uses as its view of
+# chain truth.
+indexer_url = "zec.alexxiy.top:9067"
+
+# send_endpoint: dev override for the recipient daemon's ZSMTP TCP endpoint.
+# Empty here — the counterparty receives via its own zsmtp_listen port.
+send_endpoint = ""
+
+[sockets]
+# Local user<->daemon interface (register, send, attest, status). Unix socket.
+secure_mailbox = "/Users/leviackerman/Library/Application Support/talk-counterparty/run/secure_mailbox.sock"
+
+# Local ZSMTP daemon-to-daemon listener. Unix socket.
+zsmtp = "/Users/leviackerman/Library/Application Support/talk-counterparty/run/zsmtp.sock"
+
+# ZSMTP over TCP with implicit TLS. The sender's COUNTERPARTY_PORT_SMTP points
+# here (127.0.0.1:1466 in the docs/e2e).
+zsmtp_listen = "127.0.0.1:1466"
+
+# The IMAP/IMAPS listener. With a cert configured this is IMAPS on 1145;
+# UNSAFE_NO_TLS=1 + UNSAFE_IMAP_PORT=1145 adds a plaintext listener.
+imap_listen = "127.0.0.1:1145"
+
+[tls]
+# PEM certificate and private key, shared by IMAPS and ZSMTP-over-TLS.
+# Generate with:
+#   openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+#     -keyout ~/Library/Application\ Support/talk-counterparty/key.pem \
+#     -out ~/Library/Application\ Support/talk-counterparty/cert.pem -subj "/CN=localhost"
+cert = "/Users/leviackerman/Library/Application Support/talk-counterparty/cert.pem"
+key = "/Users/leviackerman/Library/Application Support/talk-counterparty/key.pem"
+
+[auth]
+# How users authenticate to IMAP and secure_mailbox.
+mode = "database"
+
+[mailbox]
+# SQLCipher at-rest encryption is deferred — keep false.
+encrypt_db = false
+
+# Passphrase for SQLCipher (unused while encryption is deferred).
+passphrase = "CHANGE-ME"
+
+# Directory of per-user wallet databases.
+wallet_dir = "/Users/leviackerman/Library/Application Support/talk-counterparty/wallets"
+
+# The ZODL-branded template set for this counterparty.
+template_path = "/Users/leviackerman/Projects/Talk/template.counterparty.toml"

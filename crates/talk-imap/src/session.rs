@@ -829,6 +829,10 @@ fn extract_field_list(s: &str) -> Option<&str> {
 /// proper message. `filter` is `Some((fields, negate))` for `HEADER.FIELDS`.
 fn header_lines(meta: &talk_mailstore::MessageMeta, filter: Option<(&[String], bool)>) -> Vec<u8> {
     let mut hdrs: Vec<(String, String)> = Vec::new();
+    hdrs.push((
+        "Content-Type".to_string(),
+        "text/html; charset=utf-8".to_string(),
+    ));
     if !meta.sender.is_empty() {
         hdrs.push(("From".to_string(), meta.sender.clone()));
     }
@@ -888,7 +892,7 @@ fn fetch_response(meta: &talk_mailstore::MessageMeta, req: &FetchRequest, body: 
             body.iter().filter(|&&b| b == b'\n').count() + 1
         };
         parts.push(format!(
-            "BODYSTRUCTURE (\"text\" \"plain\" NIL NIL NIL NIL {} {lines})",
+            "BODYSTRUCTURE (\"text\" \"html\" NIL NIL NIL NIL {} {lines})",
             meta.size
         ));
     }

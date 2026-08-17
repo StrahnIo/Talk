@@ -1,16 +1,52 @@
 # Message templates (Tera syntax).
 #
-# Drop this file at <data_dir>/template.toml (or point [mailbox] template_path
-# at it) to override the built-in default for local payment emulation. Context
-# variables available to every template:
+# Generic payment-gateway template set for the main daemon. Point
+# [mailbox] template_path at this file (or drop it at <data_dir>/template.toml).
+# Context variables available to every template:
 #   sender_name, sender_address, amount, invoice, received_at
+#
+# The body is a complete, self-contained HTML document (inline CSS) so it
+# renders as a payment form in mail clients.
 
 [invoice]
-subject = "Invoice from {{ sender_name }}"
-body = """From:     {{ sender_name }}
-Address:  {{ sender_address }}
-Amount:   {{ amount }} ZEC
-Received: {{ received_at }}
+subject = "Payment from {{ sender_name }}"
+body = """<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Payment request</title></head>
+<body style="margin:0;padding:0;background:#f4f6f8;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1a2027;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f8;padding:32px 0;">
+    <tr><td align="center">
+      <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(26,32,39,0.08);">
+        <tr><td style="background:#111827;padding:20px 28px;">
+          <span style="color:#ffffff;font-size:18px;font-weight:700;letter-spacing:0.2px;">Payments</span>
+        </td></tr>
+        <tr><td style="padding:28px 32px;">
+          <div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:0.6px;">Payment request from</div>
+          <div style="font-size:20px;font-weight:700;color:#111827;margin-top:4px;">{{ sender_name | escape }}</div>
+          <div style="font-size:14px;color:#6b7280;margin-top:2px;">{{ sender_address | escape }}</div>
 
-{{ invoice }}
+          <div style="margin-top:24px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px 20px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="font-size:13px;color:#6b7280;">Amount due</td>
+                <td align="right" style="font-size:26px;font-weight:800;color:#111827;">{{ amount | escape }} ZEC</td>
+              </tr>
+            </table>
+          </div>
+
+          <div style="margin-top:20px;font-size:13px;color:#6b7280;">Invoice details</div>
+          <pre style="margin:6px 0 0;padding:12px 16px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;line-height:1.5;color:#374151;white-space:pre-wrap;">{{ invoice | escape }}</pre>
+
+          <div style="margin-top:24px;">
+            <a href="#" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;padding:12px 28px;border-radius:8px;">Complete payment</a>
+          </div>
+        </td></tr>
+        <tr><td style="padding:16px 32px;border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af;">
+          Received {{ received_at }} &middot; Payments &mdash; generic gateway
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
 """
