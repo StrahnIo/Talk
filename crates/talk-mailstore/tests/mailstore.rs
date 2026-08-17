@@ -525,3 +525,29 @@ fn settings_crud() {
     assert!(store.get_setting("k").expect("get").is_none());
     assert!(store.delete_setting("k").is_err());
 }
+
+#[test]
+fn users_have_inbox_and_sent() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "multibox");
+    let inbox = store.list_messages_in(user_id, talk_mailstore::INBOX).expect("inbox");
+    let sent = store.list_messages_in(user_id, talk_mailstore::SENT).expect("sent");
+    assert!(inbox.is_empty());
+    assert!(sent.is_empty());
+
+    // Same message id can live in both mailboxes independently.
+    let mk = |mid: &str, sub: &str| NewMessage::invoice(mid.to_string(), sub.to_string(), b"b".to_vec());
+    store
+        .append_message_to(user_id, talk_mailstore::INBOX, mk("m1", "received"))
+        .expect("append inbox");
+    store
+        .append_message_to(user_id, talk_mailstore::SENT, mk("m1", "sent copy"))
+        .expect("append sent");
+
+    assert_eq!(store.list_messages_in(user_id, talk_mailstore::INBOX).expect("inbox").len(), 1);
+    let sent = store.list_messages_in(user_id, talk_mailstore::SENT).expect("sent");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].subject, "sent copy");
+    assert_eq!(sent[0].uid, 1, "uids are per-mailbox");
+    assert_eq!(store.uidnext_in(user_id, talk_mailstore::SENT).expect("uidnext"), 2);
+}

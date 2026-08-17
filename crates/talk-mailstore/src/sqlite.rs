@@ -189,6 +189,10 @@ impl SqliteMailStore {
             "INSERT INTO mailboxes (user_id, name, uidvalidity) VALUES (?1, 'INBOX', ?2)",
             params![user_id, uidvalidity],
         )?;
+        guard.execute(
+            "INSERT INTO mailboxes (user_id, name, uidvalidity) VALUES (?1, 'Sent', ?2)",
+            params![user_id, uidvalidity],
+        )?;
         Ok(User {
             id: user_id,
             username: username.to_string(),
@@ -294,17 +298,15 @@ impl SqliteMailStore {
                 params![user.id],
             )?;
             guard.execute("DELETE FROM shares WHERE user_id = ?1", params![user.id])?;
-            let mailbox_id: Option<i64> = guard
-                .query_row(
-                    "SELECT id FROM mailboxes WHERE user_id = ?1",
-                    params![user.id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if let Some(mid) = mailbox_id {
-                guard.execute("DELETE FROM messages WHERE mailbox_id = ?1", params![mid])?;
-                guard.execute("DELETE FROM mailboxes WHERE id = ?1", params![mid])?;
-            }
+            guard.execute(
+                "DELETE FROM messages WHERE mailbox_id IN
+                 (SELECT id FROM mailboxes WHERE user_id = ?1)",
+                params![user.id],
+            )?;
+            guard.execute(
+                "DELETE FROM mailboxes WHERE user_id = ?1",
+                params![user.id],
+            )?;
             guard.execute("DELETE FROM users WHERE id = ?1", params![user.id])?;
             Ok(())
         })();
@@ -361,12 +363,16 @@ impl SqliteMailStore {
         Ok(key)
     }
 
-    fn mailbox_row(&self, user_id: i64) -> Result<(i64, u32, i64), StoreError> {
+    fn mailbox_named(
+        &self,
+        user_id: i64,
+        name: &str,
+    ) -> Result<(i64, u32, i64), StoreError> {
         let guard = self.lock()?;
         guard
             .query_row(
-                "SELECT id, uidvalidity, uidnext FROM mailboxes WHERE user_id = ?1 AND name = 'INBOX'",
-                params![user_id],
+                "SELECT id, uidvalidity, uidnext FROM mailboxes WHERE user_id = ?1 AND name = ?2",
+                params![user_id, name],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
@@ -379,7 +385,17 @@ impl SqliteMailStore {
     /// UIDs are allocated from the mailbox's monotonic `uidnext` counter and are
     /// never reused, even after expunge (IMAP requirement).
     pub fn append_message(&self, user_id: i64, msg: NewMessage) -> Result<MessageMeta, StoreError> {
-        let (mailbox_id, uidvalidity, uidnext) = self.mailbox_row(user_id)?;
+        self.append_message_to(user_id, crate::INBOX, msg)
+    }
+
+    /// Append a message to a named mailbox. Fails on duplicate message id.
+    pub fn append_message_to(
+        &self,
+        user_id: i64,
+        mailbox: &str,
+        msg: NewMessage,
+    ) -> Result<MessageMeta, StoreError> {
+        let (mailbox_id, uidvalidity, uidnext) = self.mailbox_named(user_id, mailbox)?;
         let guard = self.lock()?;
         let exists: i64 = guard.query_row(
             "SELECT count(*) FROM messages WHERE mailbox_id = ?1 AND message_id = ?2",
@@ -430,7 +446,16 @@ impl SqliteMailStore {
 
     /// List message metadata for a user's INBOX, newest first.
     pub fn list_messages(&self, user_id: i64) -> Result<Vec<MessageMeta>, StoreError> {
-        let (mailbox_id, uidvalidity, _) = self.mailbox_row(user_id)?;
+        self.list_messages_in(user_id, crate::INBOX)
+    }
+
+    /// List message metadata for a named mailbox, newest first.
+    pub fn list_messages_in(
+        &self,
+        user_id: i64,
+        mailbox: &str,
+    ) -> Result<Vec<MessageMeta>, StoreError> {
+        let (mailbox_id, uidvalidity, _) = self.mailbox_named(user_id, mailbox)?;
         let guard = self.lock()?;
         let mut stmt = guard.prepare(
             "SELECT id, message_id, uid, internaldate, flags, subject, size, sender, trust_state
@@ -446,7 +471,12 @@ impl SqliteMailStore {
     /// The next UID the mailbox would allocate (UIDNEXT), i.e. the monotonic
     /// counter that is never reused even after expunge.
     pub fn uidnext(&self, user_id: i64) -> Result<u32, StoreError> {
-        let (_, _, uidnext) = self.mailbox_row(user_id)?;
+        self.uidnext_in(user_id, crate::INBOX)
+    }
+
+    /// UIDNEXT for a named mailbox.
+    pub fn uidnext_in(&self, user_id: i64, mailbox: &str) -> Result<u32, StoreError> {
+        let (_, _, uidnext) = self.mailbox_named(user_id, mailbox)?;
         Ok(uidnext as u32)
     }
 
@@ -590,7 +620,17 @@ impl SqliteMailStore {
 
     /// Fetch a full message (including body) by message row id.
     pub fn fetch_message(&self, user_id: i64, message_id: i64) -> Result<Message, StoreError> {
-        let (mailbox_id, uidvalidity, _) = self.mailbox_row(user_id)?;
+        self.fetch_message_in(user_id, crate::INBOX, message_id)
+    }
+
+    /// Fetch a full message from a named mailbox.
+    pub fn fetch_message_in(
+        &self,
+        user_id: i64,
+        mailbox: &str,
+        message_id: i64,
+    ) -> Result<Message, StoreError> {
+        let (mailbox_id, uidvalidity, _) = self.mailbox_named(user_id, mailbox)?;
         let guard = self.lock()?;
         guard
             .query_row(
@@ -617,7 +657,19 @@ impl SqliteMailStore {
         mask: u32,
         value: bool,
     ) -> Result<(), StoreError> {
-        let (mailbox_id, _, _) = self.mailbox_row(user_id)?;
+        self.set_flags_in(user_id, crate::INBOX, message_id, mask, value)
+    }
+
+    /// Update flags for a message in a named mailbox.
+    pub fn set_flags_in(
+        &self,
+        user_id: i64,
+        mailbox: &str,
+        message_id: i64,
+        mask: u32,
+        value: bool,
+    ) -> Result<(), StoreError> {
+        let (mailbox_id, _, _) = self.mailbox_named(user_id, mailbox)?;
         let guard = self.lock()?;
         if value {
             guard.execute(
@@ -635,7 +687,12 @@ impl SqliteMailStore {
 
     /// Expunge (delete) messages flagged \Deleted.
     pub fn expunge(&self, user_id: i64) -> Result<Vec<u32>, StoreError> {
-        let (mailbox_id, _, _) = self.mailbox_row(user_id)?;
+        self.expunge_in(user_id, crate::INBOX)
+    }
+
+    /// Expunge (delete) messages flagged \Deleted in a named mailbox.
+    pub fn expunge_in(&self, user_id: i64, mailbox: &str) -> Result<Vec<u32>, StoreError> {
+        let (mailbox_id, _, _) = self.mailbox_named(user_id, mailbox)?;
         let guard = self.lock()?;
         let mut stmt = guard.prepare(
             "SELECT uid FROM messages

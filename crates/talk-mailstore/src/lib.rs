@@ -11,6 +11,11 @@ pub use password::{hash_password, verify_password};
 pub use sqlite::SqliteMailStore;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// The inbox mailbox name.
+pub const INBOX: &str = "INBOX";
+/// The sent mailbox name.
+pub const SENT: &str = "Sent";
+
 /// A user's immutable identity within the mailbox.
 #[derive(Debug, Clone)]
 pub struct User {
