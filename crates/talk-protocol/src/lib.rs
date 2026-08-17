@@ -30,8 +30,9 @@ pub use client::{
     connect_tcp_tls, connect_unix, send_invoice_over,
 };
 pub use dns::{
-    DohDomainKeyResolver, DohEndpointResolver, DomainKeyResolver, EndpointResolver, ResolverError,
-    SRV_SERVICE, StaticDomainKeyResolver, StaticEndpointResolver, parse_srv,
+    COUNTERPARTY_DOMAIN, COUNTERPARTY_DOMAINKEY_HEX, COUNTERPARTY_PORT_SMTP, DohDomainKeyResolver,
+    DohEndpointResolver, DomainKeyResolver, EndpointResolver, ResolverError, SRV_SERVICE,
+    StaticDomainKeyResolver, StaticEndpointResolver, is_counterparty, parse_srv,
 };
 pub use emulate::EmulatePayload;
 pub use envelope::{Envelope, Payload, Recipient};

@@ -16,6 +16,43 @@ use thiserror::Error;
 /// The unified DNS service name for ZSMTP discovery.
 pub const SRV_SERVICE: &str = "_zpayments._tcp";
 
+/// The designated local-counterparty domain: resolution for it skips DNS and
+/// resolves straight to a localhost port (see `COUNTERPARTY_PORT_SMTP`).
+pub const COUNTERPARTY_DOMAIN: &str = "example.com";
+
+/// Env var: the counterparty's ZSMTP TCP port on localhost (`_zpayments._tcp`
+/// SRV analog). Pattern: `COUNTERPARTY_PORT_<SERVICE>`.
+pub const COUNTERPARTY_PORT_SMTP: &str = "COUNTERPARTY_PORT_SMTP";
+
+/// Env var: the counterparty's public domain key, hex (32 bytes), so the
+/// AUTH/ADDR handshake verifies without DNS.
+pub const COUNTERPARTY_DOMAINKEY_HEX: &str = "COUNTERPARTY_DOMAINKEY_HEX";
+
+/// Whether `domain` is the designated local counterparty.
+pub fn is_counterparty(domain: &str) -> bool {
+    domain.eq_ignore_ascii_case(COUNTERPARTY_DOMAIN)
+}
+
+/// The counterparty's local endpoint from `COUNTERPARTY_PORT_SMTP`.
+/// `None` when unset (the caller falls back to `send_endpoint`, else errors).
+fn counterparty_endpoint() -> Option<String> {
+    std::env::var(COUNTERPARTY_PORT_SMTP)
+        .ok()
+        .and_then(|p| p.trim().parse::<u16>().ok())
+        .map(|port| format!("127.0.0.1:{port}"))
+}
+
+/// The counterparty's public domain key from `COUNTERPARTY_DOMAINKEY_HEX`.
+fn counterparty_key() -> Result<VerifyingKey, ResolverError> {
+    let raw = std::env::var(COUNTERPARTY_DOMAINKEY_HEX)
+        .map_err(|_| ResolverError::NotFound(COUNTERPARTY_DOMAIN.to_string()))?;
+    let bytes = hex::decode(raw.trim()).map_err(|e| ResolverError::InvalidKey(e.to_string()))?;
+    let key: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| ResolverError::InvalidKey("expected 32 bytes".into()))?;
+    VerifyingKey::from_bytes(&key).map_err(|e| ResolverError::InvalidKey(e.to_string()))
+}
+
 #[derive(Debug, Error)]
 pub enum ResolverError {
     #[error("no domain key found for {0}")]
@@ -173,6 +210,10 @@ struct DnsAnswer {
 
 impl DomainKeyResolver for DohDomainKeyResolver {
     fn resolving_key(&self, domain: &str) -> Result<VerifyingKey, ResolverError> {
+        if is_counterparty(domain) {
+            // The designated counterparty has no DNS; use COUNTERPARTY_DOMAINKEY_HEX.
+            return counterparty_key();
+        }
         let name = format!("{SRV_SERVICE}.{domain}");
         let records = self.client.query(&name, "TXT")?;
         let record = records
@@ -225,6 +266,12 @@ pub fn parse_srv(data: &str) -> Option<(u16, u16, u16, String)> {
 
 impl EndpointResolver for DohEndpointResolver {
     fn resolve_endpoint(&self, domain: &str) -> Result<String, ResolverError> {
+        if is_counterparty(domain) {
+            // The designated counterparty skips SRV: resolve to a localhost
+            // port from COUNTERPARTY_PORT_SMTP. Unset → NoSrv so callers fall
+            // back to the send_endpoint override, else a clear error.
+            return counterparty_endpoint().ok_or_else(|| ResolverError::NoSrv(domain.to_string()));
+        }
         let name = format!("{SRV_SERVICE}.{domain}");
         let records = self.client.query(&name, "SRV")?;
         let mut best: Option<(u16, u16, u16, String)> = None;
@@ -248,6 +295,9 @@ impl EndpointResolver for DohEndpointResolver {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
+
+    /// Env is process-global; serialize all env-mutating tests.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn static_resolver_returns_inserted_key() {
@@ -301,5 +351,50 @@ mod tests {
             r.resolve_endpoint("nope.org"),
             Err(ResolverError::NoSrv(_))
         ));
+    }
+
+    #[test]
+    fn counterparty_endpoint_from_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        // SAFETY: guarded by the mutex; edition-2024 requires unsafe set_var.
+        unsafe { std::env::set_var(COUNTERPARTY_PORT_SMTP, "1465") };
+        let r = DohEndpointResolver::default();
+        assert_eq!(
+            r.resolve_endpoint(COUNTERPARTY_DOMAIN).unwrap(),
+            "127.0.0.1:1465"
+        );
+        // Case-insensitive.
+        assert_eq!(r.resolve_endpoint("EXAMPLE.COM").unwrap(), "127.0.0.1:1465");
+        unsafe { std::env::remove_var(COUNTERPARTY_PORT_SMTP) };
+    }
+
+    #[test]
+    fn counterparty_endpoint_unset_is_nosrv() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(COUNTERPARTY_PORT_SMTP) };
+        let r = DohEndpointResolver::default();
+        assert!(matches!(
+            r.resolve_endpoint(COUNTERPARTY_DOMAIN),
+            Err(ResolverError::NoSrv(_))
+        ));
+    }
+
+    #[test]
+    fn counterparty_key_from_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let vk = key.verifying_key();
+        unsafe { std::env::set_var(COUNTERPARTY_DOMAINKEY_HEX, hex::encode(vk.to_bytes())) };
+        let r = DohDomainKeyResolver::default();
+        assert_eq!(r.resolving_key(COUNTERPARTY_DOMAIN).unwrap(), vk);
+        unsafe { std::env::remove_var(COUNTERPARTY_DOMAINKEY_HEX) };
+    }
+
+    #[test]
+    fn counterparty_key_missing_errors() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(COUNTERPARTY_DOMAINKEY_HEX) };
+        let r = DohDomainKeyResolver::default();
+        assert!(r.resolving_key(COUNTERPARTY_DOMAIN).is_err());
     }
 }

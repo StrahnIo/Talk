@@ -86,6 +86,7 @@ impl ImapServer {
             store: self.store.clone(),
             auth_mode: self.auth_mode,
             domain: self.domain.clone(),
+            selected_mailbox: talk_mailstore::INBOX.to_string(),
         }
     }
 

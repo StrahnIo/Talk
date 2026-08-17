@@ -10,6 +10,7 @@ pub mod config_cmd;
 pub mod key;
 pub mod remote;
 pub mod store;
+pub mod tx;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -73,6 +74,11 @@ pub enum Command {
     Emulate {
         #[command(subcommand)]
         action: EmulateAction,
+    },
+    /// Transaction ledger management.
+    Tx {
+        #[command(subcommand)]
+        action: tx::TxAction,
     },
     /// Deliver an invoice to a recipient mailbox.
     Send {
@@ -238,6 +244,7 @@ pub fn run(cli: Cli) -> Result<(), CtlError> {
                 &invoice,
             ),
         },
+        Command::Tx { action } => tx::run(config, action),
         Command::Send {
             sender,
             recipient,

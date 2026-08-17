@@ -282,6 +282,46 @@ the daemon config (see `template.toml` in the repository root for an example).
 Templates receive the context: `sender_name`, `sender_address`, `amount`,
 `invoice`, `received_at`.
 
+### tx
+
+Manage the transaction ledger. Every send and every delivery records a
+transaction.
+
+```
+talkctl [OPTIONS] tx list [--dir <in|out>] [--state <STATE>]
+talkctl [OPTIONS] tx show <ID>
+talkctl [OPTIONS] tx resolve <ID> [--binding <HEX>]
+talkctl [OPTIONS] tx mark-spent <ID>
+talkctl [OPTIONS] tx retry <ID>
+talkctl [OPTIONS] tx fail <ID>
+```
+
+`list [--dir <in|out>] [--state <STATE>]`
+:   List ledger transactions with direction, lifecycle state, sender →
+    recipient, amount, and message id. `STATE` is `opaque | resolved | spent |
+    sent | failed | retrying`.
+
+`show <ID>`
+:   Full detail: direction, state, sender, recipient, amount, binding,
+    message id, linked message row, persisted outbound body size, payload
+    type, and timestamps.
+
+`resolve <ID> [--binding <HEX>]`
+:   Transition an inbound transaction `opaque → resolved`, optionally
+    recording the on-chain binding (simulated scan match). Rejected for
+    outbound transactions.
+
+`mark-spent <ID>`
+:   Transition an inbound transaction `resolved → spent`.
+
+`retry <ID>`
+:   Re-send an outbound transaction from its persisted body and re-classify
+    (`sent` on success, `failed`/`retrying` on error). Requires the
+    counterparty or SRV resolution (see below).
+
+`fail <ID>`
+:   Mark an outbound transaction `failed`.
+
 ### attest
 
 ```
@@ -340,6 +380,21 @@ commands also accept the qualified form `alice@<domain>`, where `<domain>` is
 the daemon's configured `[general] domain` (`talk.local` in the examples); the
 domain is stripped and the local user is resolved. Any other domain
 (`alice@evil.org`) is rejected. `user create` only accepts a bare local name.
+
+## LOCAL COUNTERPARTY (NO DNS)
+
+The designated domain **`example.com`** skips DNS SRV resolution and resolves
+to a localhost daemon, for running two local instances without DNS:
+
+- `COUNTERPARTY_PORT_SMTP` — the counterparty's ZSMTP TCP port (naming
+  pattern: `COUNTERPARTY_PORT_<SERVICE>`). When unset, `send` falls back to
+  the `send_endpoint` config override.
+- `COUNTERPARTY_DOMAINKEY_HEX` — the counterparty's public domain key (hex,
+  32 bytes; read from its `data_dir/domainkey`), so the AUTH/ADDR handshake
+  still verifies.
+
+Both the daemon `SEND` path and `talkctl send`/`tx retry` use these
+automatically.
 
 ## EXIT STATUS
 
