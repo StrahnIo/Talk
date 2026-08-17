@@ -152,6 +152,15 @@ A future standards-shaped SMTP facade where users email commands to the server
 This is *not* the daemon-to-daemon ZSMTP path; it is a second, standards-shaped
 front door onto the same secure_mailbox handlers. Deferred.
 
+### D27 — Transaction ledger (email-analogous)
+Every send and delivery records a **transaction** in a `transactions` ledger
+table, linked to its INBOX message (inbound) or a **Sent** mailbox copy
+(outbound). States extend the documented `opaque → resolved → spent`
+machine with outbound `sent / failed / retrying`; outbound bodies are persisted
+so `tx retry` can re-deliver. The lifecycle is visible over IMAP via
+`X-Talk-Txn-Status`/`X-Talk-Txn-Id` headers. The on-chain binding half remains
+emulation-driven (`tx resolve --binding`), not a real scan.
+
 ## Open questions
 
 ### O1 — Indexer trust model

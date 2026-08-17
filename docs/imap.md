@@ -11,7 +11,7 @@ client) to prove real-client compatibility.
 ## Scope
 
 - Reference implementation, `tokio`-based, no IMAP crates.
-- One mailbox per authenticated user (`INBOX` only in v1).
+- Two mailboxes per user: **INBOX** (received) and **Sent** (outbound copies).
 - Receives pre-rendered MIME bytes (opaque to IMAP) from the delivery path.
 - **IMAPS-first** — TLS on connect. No STARTTLS in v1.
 - IDLE-only push.
@@ -44,10 +44,18 @@ that build the message list from `BODY[HEADER]`): `BODY[]`/`BODY.PEEK[]`
 (full stored body), `BODY[HEADER]`, `BODY[TEXT]`, `BODY[MIME]`, and
 `BODY[HEADER.FIELDS (...)]` / `BODY[HEADER.FIELDS.NOT (...)]`. Because the
 store keeps opaque bodies, `BODY[HEADER]` is **synthesized** from the stored
-metadata (`Date`, `From`, `Subject`, `Message-ID`); `BODY[TEXT]` and `BODY[]`
-return the stored blob. The `ALL` / `FULL` / `FAST` macros are supported.
-`RFC822.SIZE` always reflects the stored message size, even when the body is
-not fetched.
+metadata (`Date`, `From`, `Subject`, `Message-ID`, plus `X-Talk-Txn-Status`
+and `X-Talk-Txn-Id` when the message has a linked ledger transaction);
+`BODY[TEXT]` and `BODY[]` return the stored blob. The `ALL` / `FULL` / `FAST`
+macros are supported. `RFC822.SIZE` always reflects the stored message size,
+even when the body is not fetched.
+
+### Multi-mailbox
+
+`LIST` reports `INBOX` and `Sent`; `SELECT`/`EXAMINE`/`STATUS`/`SEARCH`/
+`STORE`/`UID *`/`EXPUNGE`/`FETCH` operate on the selected mailbox. `Sent`
+holds a copy of every outbound transaction (persisted at send time), so sent
+invoices are readable over IMAP like email's Sent folder.
 
 ## Framing and session model
 

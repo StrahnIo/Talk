@@ -74,6 +74,38 @@ talkctl --config /path/to/config.toml <command>
 | `attest <user> <ephemeral\|attested>` | Request an address attestation (socket → direct fallback) |
 | `send <sender> <recipient> <file> [--plaintext] [--message-id <id>]` | Deliver an invoice (socket → direct fallback) |
 | `emulate payment <user> --from-name ... --from-address ... --amount ... --invoice <file>` | Simulate a received payment through the daemon: Tera-rendered (subject+body) into the inbox via the normal delivery path (daemon required) |
+| `tx list [--dir in\|out] [--state <state>]` | Ledger listing with lifecycle state |
+| `tx show <id>` | Transaction detail (sender, recipient, amount, binding, payload, timestamps) |
+| `tx resolve <id> [--binding <hex>]` | Inbound `opaque` → `resolved` (simulated on-chain binding match) |
+| `tx mark-spent <id>` | Inbound `resolved` → `spent` |
+| `tx retry <id>` | Re-send an outbound transaction from its persisted body, re-classify |
+| `tx fail <id>` | Mark an outbound transaction failed |
+
+## Transaction ledger
+
+Every send and every delivery records a **transaction** in the ledger. Inbound
+transactions (real ZSMTP delivery or `emulate payment`) start `opaque`
+(awaiting the on-chain binding) and can be moved `resolved` (`tx resolve`) and
+`spent` (`tx mark-spent`) — emulation fills `amount`/sender/recipient.
+Outbound transactions (`send`, and `tx retry`) are `sent` on `250`,
+`failed`/`retrying` on error, and persist the outbound body so a retry can
+re-deliver. Each inbound transaction links to its INBOX message and each
+outbound transaction to a **Sent** mailbox copy, so the lifecycle is visible
+both in the ledger and over IMAP (`X-Talk-Txn-Status` / `X-Talk-Txn-Id`
+headers).
+
+## Local counterparty (no DNS)
+
+The designated domain **`example.com`** skips SRV discovery and resolves to a
+localhost daemon:
+
+- `COUNTERPARTY_PORT_SMTP` — the counterparty's ZSMTP TCP port (pattern:
+  `COUNTERPARTY_PORT_<SERVICE>`). Unset → falls back to `send_endpoint`.
+- `COUNTERPARTY_DOMAINKEY_HEX` — the counterparty's public domain key (hex,
+  32 bytes; from its `data_dir/domainkey`), so the handshake verifies.
+
+Used automatically by `send` (both the daemon path and the direct fallback),
+enabling two local daemons to run the full flow with no DNS.
 
 ## Security notes
 
