@@ -39,6 +39,110 @@ pub struct UserSummary {
     pub has_attestation: bool,
 }
 
+/// Direction of a ledger transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxDirection {
+    /// Received (an invoice delivered into the mailbox).
+    In,
+    /// Sent (an invoice the local user delivered to another server).
+    Out,
+}
+
+impl TxDirection {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TxDirection::In => "in",
+            TxDirection::Out => "out",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "in" => Some(TxDirection::In),
+            "out" => Some(TxDirection::Out),
+            _ => None,
+        }
+    }
+}
+
+/// Lifecycle state of a ledger transaction.
+///
+/// Inbound: `opaque` (awaiting the on-chain binding) → `resolved` (binding
+/// matched) → `spent` (the underlying note spent). Outbound: `sent` (accepted
+/// by the receiving server) / `failed` (permanent) / `retrying` (transient,
+/// re-send pending).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxState {
+    Opaque,
+    Resolved,
+    Spent,
+    Sent,
+    Failed,
+    Retrying,
+}
+
+impl TxState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TxState::Opaque => "opaque",
+            TxState::Resolved => "resolved",
+            TxState::Spent => "spent",
+            TxState::Sent => "sent",
+            TxState::Failed => "failed",
+            TxState::Retrying => "retrying",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "opaque" => Some(TxState::Opaque),
+            "resolved" => Some(TxState::Resolved),
+            "spent" => Some(TxState::Spent),
+            "sent" => Some(TxState::Sent),
+            "failed" => Some(TxState::Failed),
+            "retrying" => Some(TxState::Retrying),
+            _ => None,
+        }
+    }
+}
+
+/// Parameters for creating a ledger transaction.
+#[derive(Debug, Clone)]
+pub struct NewTransaction {
+    pub direction: TxDirection,
+    pub state: TxState,
+    pub sender_mailbox: String,
+    pub recipient_mailbox: String,
+    /// Decimal ZEC amount.
+    pub amount: String,
+    /// On-chain binding (`K` hex or `H(invoice)`), when known.
+    pub binding: Option<String>,
+    pub message_id: String,
+    /// Outbound only: the persisted invoice body (retry / Sent view).
+    pub outbound_body: Option<Vec<u8>>,
+}
+
+/// A ledger transaction: the email-analogous record of a send or receive.
+#[derive(Debug, Clone)]
+pub struct Transaction {
+    pub id: i64,
+    pub direction: TxDirection,
+    pub state: TxState,
+    pub sender_mailbox: String,
+    pub recipient_mailbox: String,
+    /// Decimal ZEC amount (emulation fills it; real ZSMTP may leave empty).
+    pub amount: String,
+    /// On-chain binding: `K` (hex) or `H(invoice)`, when known.
+    pub binding: Option<String>,
+    pub message_id: String,
+    /// Inbound: the INBOX message row it produced; outbound: the Sent copy.
+    pub message_row_id: Option<i64>,
+    /// Outbound only: the persisted invoice body (enables retry / Sent view).
+    pub outbound_body: Option<Vec<u8>>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// A pinned sender keyring entry for a user.
 #[derive(Debug, Clone)]
 pub struct KeyringEntry {
@@ -72,6 +176,8 @@ pub struct MessageMeta {
     pub sender: String,
     /// Sender trust state: `trusted` | `untrusted` | `unverified`.
     pub trust_state: String,
+    /// Ledger transaction state for this message's transaction, if linked.
+    pub tx_state: Option<String>,
 }
 
 /// A full message including its opaque (ciphertext) body.

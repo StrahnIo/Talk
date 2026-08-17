@@ -551,3 +551,92 @@ fn users_have_inbox_and_sent() {
     assert_eq!(sent[0].uid, 1, "uids are per-mailbox");
     assert_eq!(store.uidnext_in(user_id, talk_mailstore::SENT).expect("uidnext"), 2);
 }
+
+#[test]
+fn transactions_ledger_crud() {
+    let (_dir, store) = test_store();
+    let t = store
+        .tx_create(talk_mailstore::NewTransaction {
+            direction: talk_mailstore::TxDirection::In,
+            state: talk_mailstore::TxState::Opaque,
+            sender_mailbox: "alice@example.org".to_string(),
+            recipient_mailbox: "bob@talk.local".to_string(),
+            amount: "1.5".to_string(),
+            binding: None,
+            message_id: "msg-tx-1".to_string(),
+            outbound_body: None,
+        })
+        .expect("create");
+
+    assert_eq!(t.state, talk_mailstore::TxState::Opaque);
+    assert!(t.created_at > 0);
+    assert_eq!(t.amount, "1.5");
+
+    // Lookup by id and by (direction, message_id).
+    let got = store.tx_get(t.id).expect("get").expect("exists");
+    assert_eq!(got.message_id, "msg-tx-1");
+    let by_mid = store
+        .tx_by_message_id(talk_mailstore::TxDirection::In, "msg-tx-1")
+        .expect("by mid")
+        .expect("exists");
+    assert_eq!(by_mid.id, t.id);
+
+    // Transition + list filters.
+    store
+        .tx_transition(t.id, talk_mailstore::TxState::Resolved)
+        .expect("transition");
+    let got = store.tx_get(t.id).expect("get").expect("exists");
+    assert_eq!(got.state, talk_mailstore::TxState::Resolved);
+
+    let out = store
+        .tx_create(talk_mailstore::NewTransaction {
+            direction: talk_mailstore::TxDirection::Out,
+            state: talk_mailstore::TxState::Sent,
+            sender_mailbox: "bob@talk.local".to_string(),
+            recipient_mailbox: "alice@example.org".to_string(),
+            amount: String::new(),
+            binding: None,
+            message_id: "msg-tx-2".to_string(),
+            outbound_body: Some(b"invoice body".to_vec()),
+        })
+        .expect("create out");
+    assert_eq!(out.outbound_body.as_deref(), Some(&b"invoice body"[..]));
+
+    let all = store.tx_list(None, None).expect("all");
+    assert_eq!(all.len(), 2);
+    let in_only = store.tx_list(Some(talk_mailstore::TxDirection::In), None).expect("in");
+    assert_eq!(in_only.len(), 1);
+    let resolved = store.tx_list(None, Some(talk_mailstore::TxState::Resolved)).expect("resolved");
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].id, t.id);
+}
+
+#[test]
+fn message_links_to_transaction_state() {
+    let (_dir, store) = test_store();
+    let user_id = make_user(&store, "txlink");
+
+    let meta = store
+        .append_message(user_id, NewMessage::invoice("m1", "s", b"b".to_vec()))
+        .expect("append");
+    // No tx yet → tx_state None.
+    let listed = store.list_messages(user_id).expect("list");
+    assert!(listed[0].tx_state.is_none());
+
+    let tx = store
+        .tx_create(talk_mailstore::NewTransaction {
+            direction: talk_mailstore::TxDirection::In,
+            state: talk_mailstore::TxState::Opaque,
+            sender_mailbox: "alice@example.org".to_string(),
+            recipient_mailbox: "txlink@talk.local".to_string(),
+            amount: "0.5".to_string(),
+            binding: None,
+            message_id: "m1".to_string(),
+            outbound_body: None,
+        })
+        .expect("tx");
+    store.tx_link_message(tx.id, meta.id).expect("link");
+
+    let listed = store.list_messages(user_id).expect("list");
+    assert_eq!(listed[0].tx_state.as_deref(), Some("opaque"));
+}

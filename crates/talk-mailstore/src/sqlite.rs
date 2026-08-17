@@ -1,6 +1,6 @@
 use crate::{
-    KeyringEntry, Message, MessageFlags, MessageMeta, NewMessage, ShareEntry, StoreError, User,
-    UserSummary, now_secs,
+    KeyringEntry, Message, MessageFlags, MessageMeta, NewMessage, ShareEntry, StoreError,
+    Transaction, TxDirection, TxState, User, UserSummary, now_secs,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
@@ -106,6 +106,22 @@ impl SqliteMailStore {
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS transactions (
+                id               INTEGER PRIMARY KEY,
+                direction        TEXT NOT NULL,
+                state            TEXT NOT NULL,
+                sender_mailbox   TEXT NOT NULL,
+                recipient_mailbox TEXT NOT NULL,
+                amount           TEXT NOT NULL DEFAULT '',
+                binding          TEXT,
+                message_id       TEXT NOT NULL,
+                message_row_id   INTEGER,
+                outbound_body    BLOB,
+                created_at       INTEGER NOT NULL,
+                updated_at       INTEGER NOT NULL,
+                UNIQUE (direction, message_id)
             );
             "#,
         )?;
@@ -299,6 +315,13 @@ impl SqliteMailStore {
             )?;
             guard.execute("DELETE FROM shares WHERE user_id = ?1", params![user.id])?;
             guard.execute(
+                "DELETE FROM transactions WHERE message_row_id IN
+                 (SELECT id FROM messages WHERE mailbox_id IN
+                 (SELECT id FROM mailboxes WHERE user_id = ?1))
+                 OR sender_mailbox LIKE ?2",
+                params![user.id, format!("{}@%", user.username)],
+            )?;
+            guard.execute(
                 "DELETE FROM messages WHERE mailbox_id IN
                  (SELECT id FROM mailboxes WHERE user_id = ?1)",
                 params![user.id],
@@ -320,6 +343,140 @@ impl SqliteMailStore {
                 Err(e)
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // transaction ledger
+    // -----------------------------------------------------------------------
+
+    /// Create a ledger transaction.
+    pub fn tx_create(&self, t: crate::NewTransaction) -> Result<Transaction, StoreError> {
+        let now = now_secs();
+        let guard = self.lock()?;
+        guard.execute(
+            "INSERT INTO transactions
+             (direction, state, sender_mailbox, recipient_mailbox, amount, binding,
+              message_id, outbound_body, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                t.direction.as_str(),
+                t.state.as_str(),
+                &t.sender_mailbox,
+                &t.recipient_mailbox,
+                &t.amount,
+                t.binding.as_deref(),
+                &t.message_id,
+                t.outbound_body.as_deref(),
+                now,
+                now,
+            ],
+        )?;
+        Ok(Transaction {
+            id: guard.last_insert_rowid(),
+            direction: t.direction,
+            state: t.state,
+            sender_mailbox: t.sender_mailbox,
+            recipient_mailbox: t.recipient_mailbox,
+            amount: t.amount,
+            binding: t.binding,
+            message_id: t.message_id,
+            message_row_id: None,
+            outbound_body: t.outbound_body,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    /// Link a transaction to the message row it produced (or the Sent copy).
+    pub fn tx_link_message(&self, tx_id: i64, message_row_id: i64) -> Result<(), StoreError> {
+        let guard = self.lock()?;
+        guard.execute(
+            "UPDATE transactions SET message_row_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![message_row_id, now_secs(), tx_id],
+        )?;
+        Ok(())
+    }
+
+    /// Fetch a transaction by id.
+    pub fn tx_get(&self, id: i64) -> Result<Option<Transaction>, StoreError> {
+        let guard = self.lock()?;
+        guard
+            .query_row(
+                "SELECT id, direction, state, sender_mailbox, recipient_mailbox, amount,
+                        binding, message_id, message_row_id, outbound_body, created_at, updated_at
+                 FROM transactions WHERE id = ?1",
+                params![id],
+                row_to_tx,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Fetch a transaction by its (direction, message_id) pair.
+    pub fn tx_by_message_id(
+        &self,
+        direction: TxDirection,
+        message_id: &str,
+    ) -> Result<Option<Transaction>, StoreError> {
+        let guard = self.lock()?;
+        guard
+            .query_row(
+                "SELECT id, direction, state, sender_mailbox, recipient_mailbox, amount,
+                        binding, message_id, message_row_id, outbound_body, created_at, updated_at
+                 FROM transactions WHERE direction = ?1 AND message_id = ?2",
+                params![direction.as_str(), message_id],
+                row_to_tx,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// List transactions, newest first, optionally filtered.
+    pub fn tx_list(
+        &self,
+        direction: Option<TxDirection>,
+        state: Option<TxState>,
+    ) -> Result<Vec<Transaction>, StoreError> {
+        let guard = self.lock()?;
+        let mut sql = String::from(
+            "SELECT id, direction, state, sender_mailbox, recipient_mailbox, amount,
+                    binding, message_id, message_row_id, outbound_body, created_at, updated_at
+             FROM transactions",
+        );
+        let mut conds: Vec<String> = Vec::new();
+        let mut vals: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(d) = direction {
+            conds.push("direction = ?".to_string());
+            vals.push(Box::new(d.as_str().to_string()));
+        }
+        if let Some(s) = state {
+            conds.push("state = ?".to_string());
+            vals.push(Box::new(s.as_str().to_string()));
+        }
+        if !conds.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conds.join(" AND "));
+        }
+        sql.push_str(" ORDER BY id DESC");
+        let params = rusqlite::params_from_iter(vals.iter().map(|v| v.as_ref()));
+        let mut stmt = guard.prepare(&sql)?;
+        let rows = stmt
+            .query_map(params, row_to_tx)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Transition a transaction to a new state.
+    pub fn tx_transition(&self, id: i64, state: TxState) -> Result<(), StoreError> {
+        let guard = self.lock()?;
+        let n = guard.execute(
+            "UPDATE transactions SET state = ?1, updated_at = ?2 WHERE id = ?3",
+            params![state.as_str(), now_secs(), id],
+        )?;
+        if n == 0 {
+            return Err(StoreError::UserNotFound(id.to_string()));
+        }
+        Ok(())
     }
 
     /// Pin a sender as trusted for a user (client-verified attestation).
@@ -441,6 +598,7 @@ impl SqliteMailStore {
             size: size as u64,
             sender,
             trust_state: msg.trust_state,
+            tx_state: None,
         })
     }
 
@@ -458,9 +616,12 @@ impl SqliteMailStore {
         let (mailbox_id, uidvalidity, _) = self.mailbox_named(user_id, mailbox)?;
         let guard = self.lock()?;
         let mut stmt = guard.prepare(
-            "SELECT id, message_id, uid, internaldate, flags, subject, size, sender, trust_state
-             FROM messages WHERE mailbox_id = ?1
-             ORDER BY uid DESC",
+            "SELECT m.id, m.message_id, m.uid, m.internaldate, m.flags, m.subject,
+                    m.size, m.sender, m.trust_state, t.state
+             FROM messages m
+             LEFT JOIN transactions t ON t.message_row_id = m.id
+             WHERE m.mailbox_id = ?1
+             ORDER BY m.uid DESC",
         )?;
         let rows = stmt
             .query_map(params![mailbox_id], |row| Ok(row_to_meta(row, uidvalidity)))?
@@ -634,13 +795,16 @@ impl SqliteMailStore {
         let guard = self.lock()?;
         guard
             .query_row(
-                "SELECT id, message_id, uid, internaldate, flags, subject, size, sender, trust_state, body_blob
-                 FROM messages WHERE mailbox_id = ?1 AND id = ?2",
+                "SELECT m.id, m.message_id, m.uid, m.internaldate, m.flags, m.subject,
+                        m.size, m.sender, m.trust_state, t.state, m.body_blob
+                 FROM messages m
+                 LEFT JOIN transactions t ON t.message_row_id = m.id
+                 WHERE m.mailbox_id = ?1 AND m.id = ?2",
                 params![mailbox_id, message_id],
                 |row| {
                     Ok(Message {
                         meta: row_to_meta(row, uidvalidity),
-                        body: row.get(9)?,
+                        body: row.get(10)?,
                     })
                 },
             )
@@ -726,6 +890,7 @@ fn row_to_meta(row: &rusqlite::Row<'_>, uidvalidity: u32) -> MessageMeta {
     let size: i64 = row.get(6).unwrap_or(0);
     let sender: String = row.get(7).unwrap_or_default();
     let trust_state: String = row.get(8).unwrap_or_else(|_| "unverified".to_string());
+    let tx_state: Option<String> = row.get(9).unwrap_or(None);
     MessageMeta {
         id,
         message_id,
@@ -737,5 +902,23 @@ fn row_to_meta(row: &rusqlite::Row<'_>, uidvalidity: u32) -> MessageMeta {
         size: size as u64,
         sender,
         trust_state,
+        tx_state,
     }
+}
+
+fn row_to_tx(row: &rusqlite::Row<'_>) -> rusqlite::Result<Transaction> {
+    Ok(Transaction {
+        id: row.get(0)?,
+        direction: TxDirection::parse(&row.get::<_, String>(1)?).unwrap_or(TxDirection::In),
+        state: TxState::parse(&row.get::<_, String>(2)?).unwrap_or(TxState::Opaque),
+        sender_mailbox: row.get(3)?,
+        recipient_mailbox: row.get(4)?,
+        amount: row.get(5)?,
+        binding: row.get(6)?,
+        message_id: row.get(7)?,
+        message_row_id: row.get(8)?,
+        outbound_body: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
 }
